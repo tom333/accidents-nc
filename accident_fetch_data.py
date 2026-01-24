@@ -15,9 +15,11 @@ def _():
     from shapely.ops import unary_union
     import os
     import numpy as np
+    import glob
+    import joblib
 
     from shapely.geometry import Point
-    return Point, gpd, mo, np, os, ox, pd, pl
+    return Point, glob, gpd, joblib, mo, np, os, ox, pd, pl
 
 
 @app.cell
@@ -38,36 +40,69 @@ def _():
 
 
 @app.cell
-def _(mo):
-    caracteristiques = mo.sql(
-        f"""
-        select * from read_csv([
-            'https://www.data.gouv.fr/fr/datasets/r/e22ba475-45a3-46ac-a0f7-9ca9ed1e283a',
-            'https://www.data.gouv.fr/fr/datasets/r/07a88205-83c1-4123-a993-cba5331e8ae0',
-            'https://www.data.gouv.fr/fr/datasets/r/85cfdc0c-23e4-4674-9bcd-79a970d7269b',
-            'https://www.data.gouv.fr/fr/datasets/r/5fc299c0-4598-4c29-b74c-6a67b0cc27e7',
-            'https://www.data.gouv.fr/fr/datasets/r/104dbb32-704f-4e99-a71e-43563cb604f2',
-            'https://www.data.gouv.fr/api/1/datasets/r/83f0fb0e-e0ef-47fe-93dd-9aaee851674a'
-        ],union_by_name=true)
-        """
-    )
+def _(glob, mo):
+    carac_files = glob.glob('data/caracteristiques-*.csv')
+
+    if carac_files:
+        print(f"📂 Chargement depuis les fichiers locaux (data/)")
+        files_str = "[" + ", ".join([f"'{f}'" for f in sorted(carac_files)]) + "]"
+        caracteristiques = mo.sql(
+            f"""
+            select * from read_csv(
+                {files_str},
+                union_by_name=true
+            )
+            """
+        )
+    else:
+        print("⚠️  Fichiers locaux non trouvés, téléchargement depuis data.gouv.fr...")
+        print("   Conseil: Exécutez './download_data.sh' pour accélérer le chargement")
+        caracteristiques = mo.sql(
+            f"""
+            select * from read_csv([
+                'https://www.data.gouv.fr/fr/datasets/r/e22ba475-45a3-46ac-a0f7-9ca9ed1e283a',
+                'https://www.data.gouv.fr/fr/datasets/r/07a88205-83c1-4123-a993-cba5331e8ae0',
+                'https://www.data.gouv.fr/fr/datasets/r/85cfdc0c-23e4-4674-9bcd-79a970d7269b',
+                'https://www.data.gouv.fr/fr/datasets/r/5fc299c0-4598-4c29-b74c-6a67b0cc27e7',
+                'https://www.data.gouv.fr/fr/datasets/r/104dbb32-704f-4e99-a71e-43563cb604f2',
+                'https://www.data.gouv.fr/api/1/datasets/r/83f0fb0e-e0ef-47fe-93dd-9aaee851674a'
+            ],union_by_name=true)
+            """
+        )
     return (caracteristiques,)
 
 
 @app.cell
-def _(mo):
-    usagers = mo.sql(
-        f"""
-        select * from read_csv([
-        	'https://www.data.gouv.fr/fr/datasets/r/36b1b7b3-84b4-4901-9163-59ae8a9e3028',
-            'https://www.data.gouv.fr/fr/datasets/r/78c45763-d170-4d51-a881-e3147802d7ee',
-            'https://www.data.gouv.fr/fr/datasets/r/ba5a1956-7e82-41b7-a602-89d7dd484d7a',
-            'https://www.data.gouv.fr/fr/datasets/r/62c20524-d442-46f5-bfd8-982c59763ec8',
-            'https://www.data.gouv.fr/fr/datasets/r/68848e2a-28dd-4efc-9d5f-d512f7dbe66f',
-            'https://www.data.gouv.fr/api/1/datasets/r/f57b1f58-386d-4048-8f78-2ebe435df868'
-        ])
-        """
-    )
+def _(glob, mo):
+
+    # Charger depuis fichiers locaux si disponibles, sinon URLs distantes
+    usagers_files = glob.glob('data/usagers-*.csv')
+
+    if usagers_files:
+        print(f"📂 Chargement depuis {len(usagers_files)} fichiers usagers locaux")
+        files_str_usagers = "[" + ", ".join([f"'{f}'" for f in sorted(usagers_files)]) + "]"
+        usagers = mo.sql(
+            f"""
+            select * from read_csv(
+                {files_str_usagers},
+                union_by_name=true
+            )
+            """
+        )
+    else:
+        print("⚠️  Fichiers usagers non trouvés, téléchargement depuis data.gouv.fr...")
+        usagers = mo.sql(
+            f"""
+            select * from read_csv([
+                'https://www.data.gouv.fr/fr/datasets/r/36b1b7b3-84b4-4901-9163-59ae8a9e3028',
+                'https://www.data.gouv.fr/fr/datasets/r/78c45763-d170-4d51-a881-e3147802d7ee',
+                'https://www.data.gouv.fr/fr/datasets/r/ba5a1956-7e82-41b7-a602-89d7dd484d7a',
+                'https://www.data.gouv.fr/fr/datasets/r/62c20524-d442-46f5-bfd8-982c59763ec8',
+                'https://www.data.gouv.fr/fr/datasets/r/68848e2a-28dd-4efc-9d5f-d512f7dbe66f',
+                'https://www.data.gouv.fr/api/1/datasets/r/f57b1f58-386d-4048-8f78-2ebe435df868'
+            ],union_by_name=true)
+            """
+        )
     return (usagers,)
 
 
@@ -151,56 +186,128 @@ def _():
 
 
 @app.cell
-def _(CONFIG, Point, areas, gpd, np, os, ox, pd):
-    all_edges = []
-    filepath="routes.nc"
+def _(CONFIG, Point, areas, gpd, joblib, np, os, ox, pd):
 
-    if os.path.exists(filepath):
-        routes = gpd.read_file(filepath)
+    # PRIORITÉ 1: Charger les données pré-calculées si disponibles
+    if os.path.exists('routes_with_features.pkl'):
+        print("📦 Chargement de routes_with_features.pkl (pré-calculé)")
+        routes_data = joblib.load('routes_with_features.pkl')
+
+        # Convertir en DataFrame selon le type
+        if isinstance(routes_data, pd.DataFrame):
+            routes_df_temp = routes_data
+        elif isinstance(routes_data, dict):
+            # Si le dict contient la clé 'routes_grid', l'extraire directement
+            if 'routes_grid' in routes_data:
+                routes_df_temp = routes_data['routes_grid']
+                print(f"   ✅ Extraction de routes_grid depuis le dict")
+            # Sinon, vérifier le type des valeurs
+            else:
+                first_val = next(iter(routes_data.values()))
+                if isinstance(first_val, np.ndarray):
+                    if first_val.ndim == 2:
+                        routes_df_temp = pd.DataFrame({
+                            key: val[:, 0] if isinstance(val, np.ndarray) and val.ndim == 2 else val
+                            for key, val in routes_data.items()
+                        })
+                    else:
+                        routes_df_temp = pd.DataFrame(routes_data)
+                elif isinstance(first_val, pd.Series):
+                    routes_df_temp = pd.DataFrame({
+                        key: val.values for key, val in routes_data.items()
+                    })
+                elif isinstance(first_val, pd.DataFrame):
+                    # Prendre le premier DataFrame disponible
+                    routes_df_temp = first_val
+                else:
+                    try:
+                        routes_df_temp = pd.DataFrame(routes_data)
+                    except:
+                        routes_df_temp = pd.DataFrame({
+                            key: np.asarray(val).flatten()
+                            for key, val in routes_data.items()
+                        })
+        elif isinstance(routes_data, np.ndarray):
+            if routes_data.ndim == 2:
+                col_names = ['latitude', 'longitude', 'road_type', 'speed_limit', 'accident_density_5km', 'dist_to_noumea_km']
+                routes_df_temp = pd.DataFrame(routes_data, columns=col_names[:routes_data.shape[1]])
+            else:
+                routes_df_temp = pd.DataFrame(routes_data)
+        else:
+            routes_df_temp = pd.DataFrame(routes_data)
+
+        # Convertir en GeoDataFrame avec géométrie
+        routes_grid_loaded = gpd.GeoDataFrame(
+            routes_df_temp,
+            geometry=gpd.points_from_xy(routes_df_temp['longitude'], routes_df_temp['latitude']),
+            crs="EPSG:4326"
+        )
+
+        print(f"✅ {len(routes_grid_loaded)} points chargés avec features enrichies")
+        print(f"   Features: {', '.join([c for c in routes_grid_loaded.columns if c != 'geometry'])}")
+
+        # Charger aussi routes.nc pour compatibilité (utilisé plus tard)
+        if os.path.exists('routes.nc'):
+            routes = gpd.read_file('routes.nc')
+        else:
+            routes = None
     else:
-        for place in areas:
-            try:
-                print(f"⬇️  {place}...")
-                G = ox.graph_from_place(place, network_type='drive')
-                edges = ox.graph_to_gdfs(G, nodes=False)
-                all_edges.append(edges)
-            except Exception as e:
-                print(f"⚠️  Échec pour {place} : {e}")
+        # FALLBACK: Régénérer la grille (ancien comportement)
+        print("⚠️  routes_with_features.pkl non trouvé, génération de la grille...")
+        print("   Conseil: Exécutez 'python precompute_density.py' pour accélérer l'entraînement")
 
-        if not all_edges:
-            raise RuntimeError("Aucune donnée n'a pu être téléchargée.")
+        all_edges = []
+        filepath="routes.nc"
 
-        # Concaténer toutes les routes
-        all_routes = gpd.GeoDataFrame(pd.concat(all_edges, ignore_index=True), crs=all_edges[0].crs)
+        if os.path.exists(filepath):
+            routes = gpd.read_file(filepath)
+        else:
+            for place in areas:
+                try:
+                    print(f"⬇️  {place}...")
+                    G = ox.graph_from_place(place, network_type='drive')
+                    edges = ox.graph_to_gdfs(G, nodes=False)
+                    all_edges.append(edges)
+                except Exception as e:
+                    print(f"⚠️  Échec pour {place} : {e}")
 
-        # Supprimer les doublons géométriques
-        all_routes = all_routes.drop_duplicates(subset="geometry")
+            if not all_edges:
+                raise RuntimeError("Aucune donnée n'a pu être téléchargée.")
 
-        # Enregistrer
-        all_routes.to_file(filepath, driver="GeoJSON")
-        print(f"✅ Routes enregistrées dans {filepath}")
-        routes = all_routes
+            # Concaténer toutes les routes
+            all_routes = gpd.GeoDataFrame(pd.concat(all_edges, ignore_index=True), crs=all_edges[0].crs)
 
-    # Créer la grille spatiale (toujours, pas seulement dans le else)
-    step = CONFIG['grid_step']
-    buffer_meters = CONFIG['buffer_meters']
-    lat_min, lat_max = -23.0, -19.5
-    lon_min, lon_max = 163.5, 168.0
-    lats = np.arange(lat_min, lat_max, step)
-    lons = np.arange(lon_min, lon_max, step)
-    grid = pd.DataFrame([(lat, lon) for lat in lats for lon in lons], columns=["latitude", "longitude"])
-    grid["geometry"] = grid.apply(lambda row: Point(row["longitude"], row["latitude"]), axis=1)
-    grid_gdf = gpd.GeoDataFrame(grid, geometry="geometry", crs="EPSG:4326").to_crs(epsg=3857)
+            # Supprimer les doublons géométriques
+            all_routes = all_routes.drop_duplicates(subset="geometry")
 
-    # Buffer autour des routes
-    routes_buffer = routes.to_crs(epsg=3857).buffer(buffer_meters)
-    routes_buffer_gdf = gpd.GeoDataFrame(geometry=routes_buffer, crs="EPSG:3857")
+            # Enregistrer
+            all_routes.to_file(filepath, driver="GeoJSON")
+            print(f"✅ Routes enregistrées dans {filepath}")
+            routes = all_routes
 
-    # Spatial join
-    grid_on_roads = gpd.sjoin(grid_gdf, routes_buffer_gdf, how="inner", predicate="intersects").drop(columns="index_right")
-    routes_grid = grid_on_roads.to_crs(epsg=4326)
-    print(f"🗺️  Grille spatiale : {len(routes_grid)} points sur routes")
-    return routes, routes_grid
+        # Créer la grille spatiale
+        step = CONFIG['grid_step']
+        buffer_meters = CONFIG['buffer_meters']
+        lat_min, lat_max = -23.0, -19.5
+        lon_min, lon_max = 163.5, 168.0
+        lats = np.arange(lat_min, lat_max, step)
+        lons = np.arange(lon_min, lon_max, step)
+        grid = pd.DataFrame([(lat, lon) for lat in lats for lon in lons], columns=["latitude", "longitude"])
+        grid["geometry"] = grid.apply(lambda row: Point(row["longitude"], row["latitude"]), axis=1)
+        grid_gdf = gpd.GeoDataFrame(grid, geometry="geometry", crs="EPSG:4326").to_crs(epsg=3857)
+
+        # Buffer autour des routes
+        routes_buffer = routes.to_crs(epsg=3857).buffer(buffer_meters)
+        routes_buffer_gdf = gpd.GeoDataFrame(geometry=routes_buffer, crs="EPSG:3857")
+
+        # Spatial join
+        grid_on_roads = gpd.sjoin(grid_gdf, routes_buffer_gdf, how="inner", predicate="intersects").drop(columns="index_right")
+        routes_grid_loaded = grid_on_roads.to_crs(epsg=4326)
+        print(f"🗺️  Grille spatiale : {len(routes_grid_loaded)} points sur routes (sans features enrichies)")
+
+    # Assigner la variable finale (garantit qu'elle existe toujours en tant que GeoDataFrame)
+    routes_grid = routes_grid_loaded
+    return (routes_grid,)
 
 
 @app.cell
@@ -254,12 +361,8 @@ def _(CONFIG, accidents, accidents_filtres, gpd, np, pd, pl, routes_grid):
         # PARTIE C : PRÉPARER LA GRILLE DES ROUTES
         # ─────────────────────────────────────────────────────────
 
-        # Convertir routes_grid en GeoDataFrame si besoin et reprojeter en EPSG:3857
-        routes_grid_gdf = routes_grid.to_crs(epsg=3857) if hasattr(routes_grid, 'to_crs') else gpd.GeoDataFrame(
-            routes_grid,
-            geometry=gpd.points_from_xy(routes_grid['longitude'], routes_grid['latitude']),
-            crs="EPSG:4326"
-        ).to_crs(epsg=3857)
+        # routes_grid est déjà un GeoDataFrame, juste le reprojeter
+        routes_grid_gdf = routes_grid.to_crs(epsg=3857)
 
         # ─────────────────────────────────────────────────────────
         # PARTIE D : FILTRAGE SPATIAL - TROUVER LES ROUTES SÛRES
@@ -379,11 +482,9 @@ def _(CONFIG, accidents, accidents_filtres, gpd, np, pd, pl, routes_grid):
 
 
 @app.cell
-def _(accidents_filtres, mo, negative_samples, np, pl, routes):
+def _(accidents_filtres, mo, negative_samples, np, pl, routes_grid):
     import warnings
     from scipy.spatial.distance import cdist
-    from geopy.distance import geodesic
-    from sklearn.neighbors import NearestNeighbors
     warnings.filterwarnings('ignore')
 
     print("\n🔧 ENRICHISSEMENT DES FEATURES")
@@ -421,93 +522,51 @@ def _(accidents_filtres, mo, negative_samples, np, pl, routes):
     full_dataset_temp['dayofweek_cos'] = np.cos(2 * np.pi * full_dataset_temp['dayofweek'] / 7)
 
     # ==========================================
-    # 2. ENRICHISSEMENT OSM - CARACTÉRISTIQUES ROUTES
+    # 2. ENRICHISSEMENT OSM + DENSITÉ (PRÉ-CALCULÉS)
     # ==========================================
-    print("2️⃣ Enrichissement OSM (caractéristiques routes)...")
+    print("2️⃣ Enrichissement OSM + densité (depuis routes_with_features.pkl)...")
 
-    # Créer un mapping des types de routes
-    road_types_mapping = {
-        'motorway': 5, 'trunk': 4, 'primary': 3,
-        'secondary': 2, 'tertiary': 2, 'residential': 1,
-        'unclassified': 1, 'service': 1
-    }
+    # Vérifier si routes_grid a les features pré-calculées
+    has_precomputed = all(col in routes_grid.columns for col in ['road_type', 'speed_limit', 'accident_density_5km', 'dist_to_noumea_km'])
 
-    # Extraire les infos depuis les routes OSM
-    routes_info = routes.to_crs(epsg=4326).copy()
-    if 'highway' in routes_info.columns:
-        # Simplifier les types de routes
-        def get_road_type(highway):
-            # Gérer numpy array
-            if isinstance(highway, np.ndarray):
-                highway = highway[0] if len(highway) > 0 else 'unclassified'
-            # Gérer list
-            elif isinstance(highway, list):
-                highway = highway[0] if len(highway) > 0 else 'unclassified'
-            # Convertir en string si nécessaire
-            highway = str(highway) if highway is not None else 'unclassified'
-            return road_types_mapping.get(highway, 1)
-
-        routes_info['road_type_encoded'] = routes_info['highway'].apply(get_road_type)
-
-        # Extraire speed limit (défaut 50 si absent)
-        routes_info['speed_limit'] = routes_info.get('maxspeed', 50).fillna(50)
-        if routes_info['speed_limit'].dtype == 'object':
-            routes_info['speed_limit'] = routes_info['speed_limit'].apply(
-                lambda x: int(str(x).split()[0]) if isinstance(x, str) and x.split()[0].isdigit() else 50
-            )
-
-        # Pour chaque point, trouver la route la plus proche
+    if has_precomputed:
+        print("   ✅ Utilisation des features pré-calculées")
+        # Trouver la grille la plus proche pour chaque observation
         full_coords = full_dataset_temp[['latitude', 'longitude']].values
-        route_centroids = routes_info.geometry.centroid
-        route_coords = np.array([[p.y, p.x] for p in route_centroids])
+        grid_coords = routes_grid[['latitude', 'longitude']].values
 
-        # Calculer distances et trouver le plus proche (par batch de 1000 pour mémoire)
+        # Calculer distances (par batch pour économiser la mémoire)
         batch_size = 1000
         road_types = []
         speed_limits = []
+        densities = []
+        distances_noumea = []
 
         for i in range(0, len(full_coords), batch_size):
             batch = full_coords[i:i+batch_size]
-            distances = cdist(batch, route_coords)
+            distances = cdist(batch, grid_coords)
             nearest_indices = distances.argmin(axis=1)
 
-            road_types.extend(routes_info.iloc[nearest_indices]['road_type_encoded'].values)
-            speed_limits.extend(routes_info.iloc[nearest_indices]['speed_limit'].values)
+            road_types.extend(routes_grid.iloc[nearest_indices]['road_type'].values)
+            speed_limits.extend(routes_grid.iloc[nearest_indices]['speed_limit'].values)
+            densities.extend(routes_grid.iloc[nearest_indices]['accident_density_5km'].values)
+            distances_noumea.extend(routes_grid.iloc[nearest_indices]['dist_to_noumea_km'].values)
 
         full_dataset_temp['road_type'] = road_types
         full_dataset_temp['speed_limit'] = speed_limits
+        full_dataset_temp['accident_density_5km'] = densities
+        full_dataset_temp['dist_to_noumea_km'] = distances_noumea
     else:
-        # Pas de données highway, valeurs par défaut
+        print("   ⚠️  Features pré-calculées non disponibles, valeurs par défaut")
         full_dataset_temp['road_type'] = 2
         full_dataset_temp['speed_limit'] = 50
+        full_dataset_temp['accident_density_5km'] = 0
+        full_dataset_temp['dist_to_noumea_km'] = 100
 
     # ==========================================
-    # 3. FEATURES DE DENSITÉ ET PROXIMITÉ
+    # 3. FEATURES TEMPORELLES AVANCÉES
     # ==========================================
-    print("3️⃣ Features de densité et proximité...")
-
-    # Densité d accidents dans un rayon de 5km
-    accidents_coords = accidents_filtres.to_pandas()[['latitude', 'longitude']].values
-    knn = NearestNeighbors(radius=0.05)
-    knn.fit(accidents_coords)
-
-    distances, indices = knn.radius_neighbors(full_coords)
-    full_dataset_temp['accident_density_5km'] = [len(idx) for idx in indices]
-
-    # Distance à Nouméa (centre urbain principal)
-    noumea_center = (-22.2758, 166.4580)
-    full_dataset_temp['dist_to_noumea_km'] = full_dataset_temp.apply(
-        lambda row: geodesic(
-            (row['latitude'], row['longitude']),
-            noumea_center
-        ).km,
-        axis=1
-    )
-
-    # ==========================================
-    # 4. FEATURES TEMPORELLES AVANCÉES
-    # ==========================================
-    print("4️⃣ Features temporelles avancées...")
+    print("3️⃣ Features temporelles avancées...")
 
     # Jours fériés Nouvelle-Calédonie (approximation simplifiée)
     nc_holidays_days = [
@@ -526,7 +585,7 @@ def _(accidents_filtres, mo, negative_samples, np, pl, routes):
     full_dataset_temp['school_holidays'] = full_dataset_temp['month'].isin([1, 7, 8, 12]).astype(int)
 
     print(f"\n✅ Features enrichies : {len(full_dataset_temp.columns)} colonnes")
-    print(f"   Nouvelles features : {len(full_dataset_temp.columns) - 7}")
+    print(f"   Dont {4} features pré-calculées (OSM + densité)")
 
     full_dataset = pl.from_pandas(full_dataset_temp)
     return (full_dataset,)
@@ -1004,8 +1063,14 @@ def _(X_test, features, pd, tuned_best_model, tuned_best_model_name, y_test):
 
 
 @app.cell
-def _(features, le, tuned_best_model, tuned_best_model_name, tuned_models):
-    import joblib
+def _(
+    features,
+    joblib,
+    le,
+    tuned_best_model,
+    tuned_best_model_name,
+    tuned_models,
+):
 
     # Sauvegarder le meilleur modèle
     joblib.dump(tuned_best_model, 'accident_model.pkl')

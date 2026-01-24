@@ -12,3 +12,14 @@ __marimo__/
 
 catboost_info
 *.pkl
+
+# Données CSV (téléchargées via download_data.sh)
+data/
+*.csv
+
+# Modèles AutoML
+autogluon_models/
+
+# Base de données
+*.duckdb
+*.duckdb.wal

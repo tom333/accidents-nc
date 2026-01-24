@@ -1,0 +1,20 @@
+services:
+  accidents-app:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      # Monter les modèles depuis le host (optionnel si rebuild)
+      - ./accident_model.pkl:/app/accident_model.pkl:ro
+      - ./atm_encoder.pkl:/app/atm_encoder.pkl:ro
+      - ./features.pkl:/app/features.pkl:ro
+      - ./routes.nc:/app/routes.nc:ro
+    environment:
+      - MARIMO_LOG_LEVEL=INFO
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 40s

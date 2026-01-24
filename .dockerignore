@@ -1,0 +1,35 @@
+# Fichiers temporaires Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Environnements virtuels
+venv/
+env/
+ENV/
+.venv
+
+# Fichiers temporaires volumineux (à exclure du contexte mais pas du COPY)
+# Les .pkl et .nc sont copiés explicitement dans le Dockerfile
+
+
+# Logs
+*.log
+predict.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# uv
+.uv/
+uv.lock

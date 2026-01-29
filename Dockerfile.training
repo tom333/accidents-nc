@@ -1,0 +1,30 @@
+# Dockerfile pour le job d'entraînement annuel
+FROM python:3.13-slim
+
+WORKDIR /app
+
+# Dépendances système
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Installer uv
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.cargo/bin:$PATH"
+
+# Copier pyproject.toml et installer les dépendances
+COPY pyproject.toml .
+RUN uv pip install --system -r pyproject.toml
+
+# Installer dépendances supplémentaires pour l'orchestration
+RUN pip install --no-cache-dir mlflow boto3
+
+# Copier tout le code
+COPY . .
+
+# Rendre le script d'orchestration exécutable
+RUN chmod +x orchestrator.py download_data.sh
+
+CMD ["python", "orchestrator.py"]

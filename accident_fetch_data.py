@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.19.4"
+__generated_with = "0.19.6"
 app = marimo.App(width="medium")
 
 
@@ -17,9 +17,38 @@ def _():
     import numpy as np
     import glob
     import joblib
+    import mlflow
+    import mlflow.sklearn
+    import mlflow.catboost
+    import mlflow.lightgbm
+    import mlflow.xgboost
+    from dotenv import load_dotenv
 
     from shapely.geometry import Point
-    return Point, glob, gpd, joblib, mo, np, os, ox, pd, pl
+
+    # Charger les variables d'environnement depuis .env
+    load_dotenv()
+    print(f"🔑 Variables d'environnement chargées depuis .env")
+    print(f"   AWS_ACCESS_KEY_ID: {'✅ défini' if os.getenv('AWS_ACCESS_KEY_ID') else '❌ manquant'}")
+    print(f"   AWS_SECRET_ACCESS_KEY: {'✅ défini' if os.getenv('AWS_SECRET_ACCESS_KEY') else '❌ manquant'}")
+    return Point, glob, gpd, joblib, mlflow, mo, np, os, ox, pd, pl
+
+
+@app.cell
+def _(mlflow):
+    mlflow.set_tracking_uri("https://mlflow.tgu.ovh")
+    mlflow.search_experiments()
+    return
+
+
+@app.cell
+def _(mlflow):
+    # Configuration MLflow
+    mlflow.set_tracking_uri("https://mlflow.tgu.ovh")
+    mlflow.set_experiment("accidents-nc")
+    print(f"🔬 MLflow configuré : {mlflow.get_tracking_uri()}")
+    print(f"📊 Expérience : {mlflow.get_experiment_by_name('accidents-nc').name}")
+    return
 
 
 @app.cell
@@ -325,11 +354,20 @@ def _(CONFIG, accidents, accidents_filtres, gpd, np, pd, pl, routes_grid):
         # ─────────────────────────────────────────────────────────
 
         # Convertir les accidents en GeoDataFrame (objets géospatiaux)
+        accidents_pd = accidents_filtres.to_pandas()
+        # Fix pandas 2.x/pyarrow: convertir toutes les colonnes en numpy avant GeoDataFrame
+        accidents_data = {}
+        for col in accidents_pd.columns:
+            if hasattr(accidents_pd[col], 'to_numpy'):
+                accidents_data[col] = accidents_pd[col].to_numpy()
+            else:
+                accidents_data[col] = accidents_pd[col].values
+
         accidents_gdf = gpd.GeoDataFrame(
-            accidents_filtres.to_pandas(),
+            accidents_data,
             geometry=gpd.points_from_xy(
-                accidents_filtres['longitude'].to_list(),
-                accidents_filtres['latitude'].to_list()
+                accidents_data['longitude'],
+                accidents_data['latitude']
             ),
             crs="EPSG:4326"  # Coordonnées géographiques standard
         )
@@ -362,7 +400,21 @@ def _(CONFIG, accidents, accidents_filtres, gpd, np, pd, pl, routes_grid):
         # ─────────────────────────────────────────────────────────
 
         # routes_grid est déjà un GeoDataFrame, juste le reprojeter
-        routes_grid_gdf = routes_grid.to_crs(epsg=3857)
+        # Fix pandas 2.x/pyarrow: reconstruire avec colonnes numpy
+        routes_grid_data = {}
+        for col in routes_grid.columns:
+            if col != 'geometry':
+                if hasattr(routes_grid[col], 'to_numpy'):
+                    routes_grid_data[col] = routes_grid[col].to_numpy()
+                else:
+                    routes_grid_data[col] = routes_grid[col].values
+
+        routes_grid_fixed = gpd.GeoDataFrame(
+            routes_grid_data,
+            geometry=routes_grid.geometry.values,
+            crs=routes_grid.crs
+        )
+        routes_grid_gdf = routes_grid_fixed.to_crs(epsg=3857)
 
         # ─────────────────────────────────────────────────────────
         # PARTIE D : FILTRAGE SPATIAL - TROUVER LES ROUTES SÛRES
@@ -535,6 +587,12 @@ def _(accidents_filtres, mo, negative_samples, np, pl, routes_grid):
         full_coords = full_dataset_temp[['latitude', 'longitude']].values
         grid_coords = routes_grid[['latitude', 'longitude']].values
 
+        # Fix pandas 2.x/pyarrow: convertir les colonnes en numpy arrays une seule fois
+        road_type_array = routes_grid['road_type'].to_numpy() if hasattr(routes_grid['road_type'], 'to_numpy') else routes_grid['road_type'].values
+        speed_limit_array = routes_grid['speed_limit'].to_numpy() if hasattr(routes_grid['speed_limit'], 'to_numpy') else routes_grid['speed_limit'].values
+        density_array = routes_grid['accident_density_5km'].to_numpy() if hasattr(routes_grid['accident_density_5km'], 'to_numpy') else routes_grid['accident_density_5km'].values
+        dist_noumea_array = routes_grid['dist_to_noumea_km'].to_numpy() if hasattr(routes_grid['dist_to_noumea_km'], 'to_numpy') else routes_grid['dist_to_noumea_km'].values
+
         # Calculer distances (par batch pour économiser la mémoire)
         batch_size = 1000
         road_types = []
@@ -547,10 +605,10 @@ def _(accidents_filtres, mo, negative_samples, np, pl, routes_grid):
             distances = cdist(batch, grid_coords)
             nearest_indices = distances.argmin(axis=1)
 
-            road_types.extend(routes_grid.iloc[nearest_indices]['road_type'].values)
-            speed_limits.extend(routes_grid.iloc[nearest_indices]['speed_limit'].values)
-            densities.extend(routes_grid.iloc[nearest_indices]['accident_density_5km'].values)
-            distances_noumea.extend(routes_grid.iloc[nearest_indices]['dist_to_noumea_km'].values)
+            road_types.extend(road_type_array[nearest_indices])
+            speed_limits.extend(speed_limit_array[nearest_indices])
+            densities.extend(density_array[nearest_indices])
+            distances_noumea.extend(dist_noumea_array[nearest_indices])
 
         full_dataset_temp['road_type'] = road_types
         full_dataset_temp['speed_limit'] = speed_limits
@@ -690,6 +748,7 @@ def _(
     X_test,
     X_train,
     f1_score,
+    mlflow,
     optuna,
     pd,
     precision_score,
@@ -709,6 +768,18 @@ def _(
     tuning_n_positive = (y_train == 1).sum()
     tuning_scale_weight = tuning_n_negative / tuning_n_positive
     print(f"⚖️  Ratio classes: {tuning_scale_weight:.1f}:1 (négatif:positif)\n")
+
+    # Créer un run parent MLflow pour toute la session de tuning
+    mlflow.start_run(run_name="hyperparameter-tuning")
+    mlflow.log_params({
+        'n_negative_samples_ratio': CONFIG['n_negative_samples_ratio'],
+        'buffer_meters': CONFIG['buffer_meters'],
+        'grid_step': CONFIG['grid_step'],
+        'test_size': CONFIG['test_size'],
+        'scale_weight': tuning_scale_weight,
+        'n_train_samples': len(y_train),
+        'n_test_samples': len(y_test)
+    })
 
     # ========================================
     # 1. CATBOOST TUNING
@@ -836,98 +907,143 @@ def _(
 
     tuned_models = {}
     tuning_results = []
+    model_run_ids = {}  # Stocker les run_id de chaque modèle
 
     # CatBoost
     print("🐱 CatBoost final...")
-    best_catboost = CatBoostClassifier(
-        **study_catboost.best_params,
-        auto_class_weights='Balanced',
-        eval_metric='AUC',
-        random_state=CONFIG['random_state'],
-        verbose=False
-    )
-    best_catboost.fit(X_train, y_train)
-    y_pred_cat = best_catboost.predict(X_test)
-    y_proba_cat = best_catboost.predict_proba(X_test)[:, 1]
+    with mlflow.start_run(run_name="CatBoost", nested=True) as run:
+        model_run_ids['CatBoost'] = run.info.run_id
 
-    recall_cat = recall_score(y_test, y_pred_cat, pos_label=1)
-    precision_cat = precision_score(y_test, y_pred_cat, pos_label=1)
-    f1_cat = f1_score(y_test, y_pred_cat, pos_label=1)
-    auc_cat = roc_auc_score(y_test, y_proba_cat)
+        best_catboost = CatBoostClassifier(
+            **study_catboost.best_params,
+            auto_class_weights='Balanced',
+            eval_metric='AUC',
+            random_state=CONFIG['random_state'],
+            verbose=False
+        )
+        best_catboost.fit(X_train, y_train)
+        y_pred_cat = best_catboost.predict(X_test)
+        y_proba_cat = best_catboost.predict_proba(X_test)[:, 1]
 
-    tuned_models['CatBoost'] = best_catboost
-    tuning_results.append({
-        'Modèle': 'CatBoost',
-        'Recall': f"{recall_cat:.3f}",
-        'Precision': f"{precision_cat:.3f}",
-        'F1-Score': f"{f1_cat:.3f}",
-        'AUC-ROC': f"{auc_cat:.3f}",
-        'Temps (s)': f"{catboost_time:.0f}",
-        '_recall_raw': recall_cat
-    })
-    print(f"   Recall: {recall_cat:.3f} | F1: {f1_cat:.3f} | AUC: {auc_cat:.3f}")
+        recall_cat = recall_score(y_test, y_pred_cat, pos_label=1)
+        precision_cat = precision_score(y_test, y_pred_cat, pos_label=1)
+        f1_cat = f1_score(y_test, y_pred_cat, pos_label=1)
+        auc_cat = roc_auc_score(y_test, y_proba_cat)
+
+        # Logger dans MLflow
+        mlflow.log_params(study_catboost.best_params)
+        mlflow.log_metrics({
+            'recall': recall_cat,
+            'precision': precision_cat,
+            'f1_score': f1_cat,
+            'auc_roc': auc_cat,
+            'training_time_seconds': catboost_time
+        })
+        mlflow.catboost.log_model(cb_model=best_catboost, name="model")
+
+        tuned_models['CatBoost'] = best_catboost
+        tuning_results.append({
+            'Modèle': 'CatBoost',
+            'Recall': f"{recall_cat:.3f}",
+            'Precision': f"{precision_cat:.3f}",
+            'F1-Score': f"{f1_cat:.3f}",
+            'AUC-ROC': f"{auc_cat:.3f}",
+            'Temps (s)': f"{catboost_time:.0f}",
+            '_recall_raw': recall_cat
+        })
+        print(f"   Recall: {recall_cat:.3f} | F1: {f1_cat:.3f} | AUC: {auc_cat:.3f}")
 
     # LightGBM
     print("💡 LightGBM final...")
-    best_lgbm = LGBMClassifier(
-        **study_lgbm.best_params,
-        is_unbalance=True,
-        metric='auc',
-        random_state=CONFIG['random_state'],
-        verbose=-1
-    )
-    best_lgbm.fit(X_train, y_train)
-    y_pred_lgbm = best_lgbm.predict(X_test)
-    y_proba_lgbm = best_lgbm.predict_proba(X_test)[:, 1]
+    with mlflow.start_run(run_name="LightGBM", nested=True) as run:
+        model_run_ids['LightGBM'] = run.info.run_id
 
-    recall_lgbm = recall_score(y_test, y_pred_lgbm, pos_label=1)
-    precision_lgbm = precision_score(y_test, y_pred_lgbm, pos_label=1)
-    f1_lgbm = f1_score(y_test, y_pred_lgbm, pos_label=1)
-    auc_lgbm = roc_auc_score(y_test, y_proba_lgbm)
+        best_lgbm = LGBMClassifier(
+            **study_lgbm.best_params,
+            is_unbalance=True,
+            metric='auc',
+            random_state=CONFIG['random_state'],
+            verbose=-1
+        )
+        best_lgbm.fit(X_train, y_train)
+        y_pred_lgbm = best_lgbm.predict(X_test)
+        y_proba_lgbm = best_lgbm.predict_proba(X_test)[:, 1]
 
-    tuned_models['LightGBM'] = best_lgbm
-    tuning_results.append({
-        'Modèle': 'LightGBM',
-        'Recall': f"{recall_lgbm:.3f}",
-        'Precision': f"{precision_lgbm:.3f}",
-        'F1-Score': f"{f1_lgbm:.3f}",
-        'AUC-ROC': f"{auc_lgbm:.3f}",
-        'Temps (s)': f"{lgbm_time:.0f}",
-        '_recall_raw': recall_lgbm
-    })
-    print(f"   Recall: {recall_lgbm:.3f} | F1: {f1_lgbm:.3f} | AUC: {auc_lgbm:.3f}")
+        recall_lgbm = recall_score(y_test, y_pred_lgbm, pos_label=1)
+        precision_lgbm = precision_score(y_test, y_pred_lgbm, pos_label=1)
+        f1_lgbm = f1_score(y_test, y_pred_lgbm, pos_label=1)
+        auc_lgbm = roc_auc_score(y_test, y_proba_lgbm)
+
+        # Logger dans MLflow
+        mlflow.log_params(study_lgbm.best_params)
+        mlflow.log_metrics({
+            'recall': recall_lgbm,
+            'precision': precision_lgbm,
+            'f1_score': f1_lgbm,
+            'auc_roc': auc_lgbm,
+            'training_time_seconds': lgbm_time
+        })
+        mlflow.lightgbm.log_model(lgb_model=best_lgbm, name="model")
+
+        tuned_models['LightGBM'] = best_lgbm
+        tuning_results.append({
+            'Modèle': 'LightGBM',
+            'Recall': f"{recall_lgbm:.3f}",
+            'Precision': f"{precision_lgbm:.3f}",
+            'F1-Score': f"{f1_lgbm:.3f}",
+            'AUC-ROC': f"{auc_lgbm:.3f}",
+            'Temps (s)': f"{lgbm_time:.0f}",
+            '_recall_raw': recall_lgbm
+        })
+        print(f"   Recall: {recall_lgbm:.3f} | F1: {f1_lgbm:.3f} | AUC: {auc_lgbm:.3f}")
 
     # XGBoost
     print("⚡ XGBoost final...")
-    best_xgb = XGBClassifier(
-        **study_xgb.best_params,
-        scale_pos_weight=tuning_scale_weight,
-        random_state=CONFIG['random_state'],
-        verbosity=0
-    )
-    best_xgb.fit(X_train, y_train)
-    y_pred_xgb = best_xgb.predict(X_test)
-    y_proba_xgb = best_xgb.predict_proba(X_test)[:, 1]
+    with mlflow.start_run(run_name="XGBoost", nested=True) as run:
+        model_run_ids['XGBoost'] = run.info.run_id
 
-    recall_xgb = recall_score(y_test, y_pred_xgb, pos_label=1)
-    precision_xgb = precision_score(y_test, y_pred_xgb, pos_label=1)
-    f1_xgb = f1_score(y_test, y_pred_xgb, pos_label=1)
-    auc_xgb = roc_auc_score(y_test, y_proba_xgb)
+        best_xgb = XGBClassifier(
+            **study_xgb.best_params,
+            scale_pos_weight=tuning_scale_weight,
+            random_state=CONFIG['random_state'],
+            verbosity=0
+        )
+        best_xgb.fit(X_train, y_train)
+        y_pred_xgb = best_xgb.predict(X_test)
+        y_proba_xgb = best_xgb.predict_proba(X_test)[:, 1]
 
-    tuned_models['XGBoost'] = best_xgb
-    tuning_results.append({
-        'Modèle': 'XGBoost',
-        'Recall': f"{recall_xgb:.3f}",
-        'Precision': f"{precision_xgb:.3f}",
-        'F1-Score': f"{f1_xgb:.3f}",
-        'AUC-ROC': f"{auc_xgb:.3f}",
-        'Temps (s)': f"{xgb_time:.0f}",
-        '_recall_raw': recall_xgb
-    })
-    print(f"   Recall: {recall_xgb:.3f} | F1: {f1_xgb:.3f} | AUC: {auc_xgb:.3f}")
+        recall_xgb = recall_score(y_test, y_pred_xgb, pos_label=1)
+        precision_xgb = precision_score(y_test, y_pred_xgb, pos_label=1)
+        f1_xgb = f1_score(y_test, y_pred_xgb, pos_label=1)
+        auc_xgb = roc_auc_score(y_test, y_proba_xgb)
+
+        # Logger dans MLflow
+        mlflow.log_params(study_xgb.best_params)
+        mlflow.log_metrics({
+            'recall': recall_xgb,
+            'precision': precision_xgb,
+            'f1_score': f1_xgb,
+            'auc_roc': auc_xgb,
+            'training_time_seconds': xgb_time
+        })
+        mlflow.xgboost.log_model(xgb_model=best_xgb, name="model")
+
+        tuned_models['XGBoost'] = best_xgb
+        tuning_results.append({
+            'Modèle': 'XGBoost',
+            'Recall': f"{recall_xgb:.3f}",
+            'Precision': f"{precision_xgb:.3f}",
+            'F1-Score': f"{f1_xgb:.3f}",
+            'AUC-ROC': f"{auc_xgb:.3f}",
+            'Temps (s)': f"{xgb_time:.0f}",
+            '_recall_raw': recall_xgb
+        })
+        print(f"   Recall: {recall_xgb:.3f} | F1: {f1_xgb:.3f} | AUC: {auc_xgb:.3f}")
 
     # Tableau récapitulatif
-    tuning_results_df = pd.DataFrame(tuning_results).sort_values('_recall_raw', ascending=False).drop(columns='_recall_raw')
+    tuning_results_df_full = pd.DataFrame(tuning_results).sort_values('_recall_raw', ascending=False)
+    best_recall_value = tuning_results_df_full.iloc[0]['_recall_raw']
+    tuning_results_df = tuning_results_df_full.drop(columns='_recall_raw')
     print("\n📊 RÉSULTATS FINAUX (trié par Recall)\n")
     print(tuning_results_df.to_string(index=False))
 
@@ -937,6 +1053,23 @@ def _(
 
     print(f"\n🥇 GAGNANT : {tuned_best_model_name}")
     print(f"   → Meilleur Recall pour détecter les accidents\n")
+
+    # Logger le meilleur modèle dans le run parent
+    mlflow.log_metric("best_recall", best_recall_value)
+    mlflow.log_param("best_model", tuned_best_model_name)
+    mlflow.log_table(tuning_results_df, "comparison_table.json")
+
+    # Enregistrer le meilleur modèle dans le Model Registry
+    best_model_run_id = model_run_ids[tuned_best_model_name]
+    model_uri = f"runs:/{best_model_run_id}/model"
+    model_details = mlflow.register_model(
+        model_uri=model_uri,
+        name="accidents-nc-best-model"
+    )
+    print(f"\n📦 Modèle enregistré dans MLflow Registry: {model_details.name} (version {model_details.version})")
+
+    # Fermer le run parent
+    mlflow.end_run()
 
     # Stocker les études pour visualisation
     optuna_studies = {

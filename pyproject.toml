@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "boto3>=1.42.37",
     "catboost>=1.2.8",
     "duckdb>=1.2.1",
     "folium>=0.20.0",
@@ -15,14 +16,18 @@ dependencies = [
     "lightgbm>=4.6.0",
     "marimo[recommended]>=0.19.4",
     "matplotlib>=3.10.8",
+    "mlflow-skinny>=3.8.1",
     "numpy>=2.4.1",
     "optuna>=4.7.0",
     "optuna-integration>=4.7.0",
     "osmnx>=2.0.7",
-    "pandas>=3.0.0",
+    "pandas>=2.3.3",
     "polars>=1.29.0",
     "pytest>=8.3.5",
+    "python-dotenv>=1.2.1",
     "scikit-learn>=1.8.0",
     "shapely>=2.1.2",
+    "streamlit>=1.53.1",
+    "streamlit-folium>=0.26.1",
     "xgboost>=3.1.3",
 ]

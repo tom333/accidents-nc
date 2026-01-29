@@ -1,0 +1,57 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: annual-training
+  namespace: accidents
+spec:
+  # Exécuter le 2 janvier à 2h du matin chaque année
+  schedule: "0 2 2 1 *"  # Minute Hour Day Month DayOfWeek
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: trainer
+            image: localhost:32000/accidents-training:latest
+            env:
+            - name: MLFLOW_URI
+              value: "http://mlflow:5000"
+            - name: AWS_ACCESS_KEY_ID
+              value: "minioadmin"
+            - name: AWS_SECRET_ACCESS_KEY
+              value: "minioadmin"
+            - name: MLFLOW_S3_ENDPOINT_URL
+              value: "http://minio:9000"
+            resources:
+              requests:
+                memory: "4Gi"
+                cpu: "2"
+              limits:
+                memory: "8Gi"
+                cpu: "4"
+            volumeMounts:
+            - name: data-cache
+              mountPath: /app/data
+            - name: reports
+              mountPath: /app/reports
+          volumes:
+          - name: data-cache
+            emptyDir: {}
+          - name: reports
+            persistentVolumeClaim:
+              claimName: reports-pvc
+          restartPolicy: OnFailure
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: reports-pvc
+  namespace: accidents
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi

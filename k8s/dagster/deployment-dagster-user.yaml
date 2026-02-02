@@ -26,10 +26,10 @@ spec:
           - dagster
           - api
           - grpc
-          - --python-file
-          - /opt/dagster/app/dagster_accidents/repository.py
           - --module-name
           - dagster_accidents.repository
+          - --attribute
+          - defs
           - --port
           - "4000"
           - --host
@@ -65,17 +65,17 @@ spec:
             configMapKeyRef:
               name: dagster-ducklake-config
               key: AWS_REGION
-        # Credentials depuis Secret
+        # Credentials depuis Secret rustfs-credentials-dagster
         - name: AWS_ACCESS_KEY_ID
           valueFrom:
             secretKeyRef:
-              name: dagster-ducklake-secrets
-              key: AWS_ACCESS_KEY_ID
+              name: rustfs-credentials-dagster
+              key: access_key
         - name: AWS_SECRET_ACCESS_KEY
           valueFrom:
             secretKeyRef:
-              name: dagster-ducklake-secrets
-              key: AWS_SECRET_ACCESS_KEY
+              name: rustfs-credentials-dagster
+              key: secret_key
         resources:
           requests:
             memory: "2Gi"

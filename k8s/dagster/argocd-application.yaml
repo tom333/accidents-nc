@@ -9,7 +9,7 @@ spec:
   project: infra-project
   
   source:
-    repoURL: https://github.com/votre-org/accidents.git  # À adapter avec votre repo
+    repoURL: https://github.com/tom333/accidents-nc.git  # À adapter avec votre repo
     targetRevision: main
     path: k8s/dagster
   

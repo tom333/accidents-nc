@@ -1,0 +1,19 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: dagster
+
+resources:
+  - configmap-dagster-ducklake.yaml
+  - pvc-dagster-models.yaml
+  - deployment-dagster-user.yaml
+
+# Annotations communes pour ArgoCD
+commonAnnotations:
+  argocd.argoproj.io/sync-wave: "2"
+
+# Labels communes
+commonLabels:
+  app.kubernetes.io/name: dagster-accidents
+  app.kubernetes.io/component: user-code
+  app.kubernetes.io/managed-by: argocd

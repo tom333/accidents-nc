@@ -1,0 +1,8 @@
+# Configuration workspace Dagster pour accidents pipeline
+# À appliquer via ConfigMap ou dans le Helm chart de Dagster
+
+load_from:
+  - grpc_server:
+      host: dagster-user-code-accidents
+      port: 4000
+      location_name: "accidents_pipeline"

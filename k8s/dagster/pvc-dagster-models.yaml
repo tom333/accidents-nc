@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: dagster-models-pvc
+  namespace: dagster
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+  # Si vous utilisez un StorageClass spécifique, décommentez :
+  # storageClassName: your-storage-class

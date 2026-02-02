@@ -1,0 +1,31 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: dagster-accidents-pipeline
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: infra-project
+  
+  source:
+    repoURL: https://github.com/votre-org/accidents.git  # À adapter avec votre repo
+    targetRevision: main
+    path: k8s/dagster
+  
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: dagster
+  
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
+  
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /spec/replicas

@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dagster-ducklake-config
+  namespace: dagster
+data:
+  DUCKLAKE_DB_ALIAS: "accidents_ducklake"
+  AWS_REGION: "us-east-1"
+  # DSN Postgres pour catalogue DuckLake (service datalab)
+  DUCKLAKE_DATABASE_URL: "postgres:dbname=data host=postgresql.datalab.svc.cluster.local user=data"
+  # Endpoint RustFS public (tgu.ovh)
+  AWS_ENDPOINT_URL: "https://rustfs.tgu.ovh"
+  DUCKLAKE_DATA_PATH: "s3://accidents-bucket/ducklake/"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: dagster-ducklake-secrets
+  namespace: dagster
+type: Opaque
+stringData:
+  # Password PostgreSQL pour le catalogue DuckLake
+  POSTGRES_PASSWORD: "data"
+  # Credentials RustFS (copiés depuis ia-lab/rustfs-credentials)
+  AWS_ACCESS_KEY_ID: "rustfsadmin"
+  AWS_SECRET_ACCESS_KEY: "rustfsadmin"
+

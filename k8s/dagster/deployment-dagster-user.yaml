@@ -1,0 +1,109 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dagster-user-deployment-accidents
+  namespace: dagster
+  labels:
+    app: dagster-user-code
+    component: accidents
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dagster-user-code
+      component: accidents
+  template:
+    metadata:
+      labels:
+        app: dagster-user-code
+        component: accidents
+    spec:
+      containers:
+      - name: user-code
+        image: localhost:32000/accidents-dagster:latest
+        imagePullPolicy: Always
+        command:
+          - dagster
+          - api
+          - grpc
+          - --python-file
+          - /opt/dagster/app/dagster_accidents/repository.py
+          - --module-name
+          - dagster_accidents.repository
+          - --port
+          - "4000"
+          - --host
+          - "0.0.0.0"
+        ports:
+        - containerPort: 4000
+          name: grpc
+          protocol: TCP
+        env:
+        # Variables DuckLake depuis ConfigMap
+        - name: DUCKLAKE_DATABASE_URL
+          valueFrom:
+            configMapKeyRef:
+              name: dagster-ducklake-config
+              key: DUCKLAKE_DATABASE_URL
+        - name: DUCKLAKE_DATA_PATH
+          valueFrom:
+            configMapKeyRef:
+              name: dagster-ducklake-config
+              key: DUCKLAKE_DATA_PATH
+        - name: DUCKLAKE_DB_ALIAS
+          valueFrom:
+            configMapKeyRef:
+              name: dagster-ducklake-config
+              key: DUCKLAKE_DB_ALIAS
+        - name: AWS_ENDPOINT_URL
+          valueFrom:
+            configMapKeyRef:
+              name: dagster-ducklake-config
+              key: AWS_ENDPOINT_URL
+        - name: AWS_REGION
+          valueFrom:
+            configMapKeyRef:
+              name: dagster-ducklake-config
+              key: AWS_REGION
+        # Credentials depuis Secret
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: dagster-ducklake-secrets
+              key: AWS_ACCESS_KEY_ID
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: dagster-ducklake-secrets
+              key: AWS_SECRET_ACCESS_KEY
+        resources:
+          requests:
+            memory: "2Gi"
+            cpu: "1000m"
+          limits:
+            memory: "4Gi"
+            cpu: "2000m"
+        volumeMounts:
+        # Volume pour stocker les artefacts ML (pkl files)
+        - name: model-storage
+          mountPath: /opt/dagster/app/models
+      volumes:
+      - name: model-storage
+        persistentVolumeClaim:
+          claimName: dagster-models-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dagster-user-code-accidents
+  namespace: dagster
+spec:
+  type: ClusterIP
+  ports:
+  - port: 4000
+    targetPort: 4000
+    protocol: TCP
+    name: grpc
+  selector:
+    app: dagster-user-code
+    component: accidents

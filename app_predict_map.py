@@ -9,6 +9,7 @@ import pandas as pd
 import numpy as np
 import geopandas as gpd
 from datetime import datetime, timedelta, date
+from pathlib import Path
 import folium
 from streamlit_folium import st_folium
 from shapely.geometry import Point
@@ -111,85 +112,142 @@ def load_model_and_data():
     with st.spinner("🔄 Chargement du modèle et des données..."):
         # Charger le modèle
         model = joblib.load('accident_model.pkl')
+        encoder = joblib.load('atm_encoder.pkl')
         features = joblib.load('features.pkl')
         
-        # Charger les routes OSM
-        routes_osm = gpd.read_file('routes.nc')
-        
-        # Créer la grille spatiale
-        grid_step = 0.02  # ~2km
-        buffer_meters = 200
-        lat_min, lat_max = -23.0, -19.5
-        lon_min, lon_max = 163.5, 168.0
-        
-        lats = np.arange(lat_min, lat_max, grid_step)
-        lons = np.arange(lon_min, lon_max, grid_step)
-        
-        grid = pd.DataFrame(
-            [(lat, lon) for lat in lats for lon in lons],
-            columns=["latitude", "longitude"]
-        )
-        grid["geometry"] = grid.apply(
-            lambda row: Point(row["longitude"], row["latitude"]), axis=1
-        )
-        grid_gdf = gpd.GeoDataFrame(grid, geometry="geometry", crs="EPSG:4326").to_crs(epsg=3857)
-        
-        # Buffer autour des routes
-        routes_buffer = routes_osm.to_crs(epsg=3857).buffer(buffer_meters)
-        routes_buffer_gdf = gpd.GeoDataFrame(geometry=routes_buffer, crs="EPSG:3857")
-        
-        # Spatial join
-        grid_on_roads = gpd.sjoin(
-            grid_gdf, routes_buffer_gdf, how="inner", predicate="intersects"
-        ).drop(columns="index_right")
-        routes_grid = grid_on_roads.to_crs(epsg=4326).drop_duplicates(
-            subset=['latitude', 'longitude']
-        )
-        
-        # Précomputer les features OSM
-        road_types_mapping = {
-            'motorway': 5, 'trunk': 4, 'primary': 3,
-            'secondary': 2, 'tertiary': 2, 'residential': 1,
-            'unclassified': 1, 'service': 1
-        }
-        
-        routes_info = routes_osm.to_crs(epsg=4326).copy()
-        if 'highway' in routes_info.columns:
-            def get_road_type(highway):
-                if isinstance(highway, (np.ndarray, list)):
-                    highway = highway[0] if len(highway) > 0 else 'unclassified'
-                highway = str(highway) if highway is not None else 'unclassified'
-                return road_types_mapping.get(highway, 1)
-            
-            routes_info['road_type_encoded'] = routes_info['highway'].apply(get_road_type)
-            routes_info['speed_limit'] = routes_info.get('maxspeed', 50).fillna(50)
-            
-            if routes_info['speed_limit'].dtype == 'object':
-                routes_info['speed_limit'] = routes_info['speed_limit'].apply(
-                    lambda x: int(str(x).split()[0]) if isinstance(x, str) and str(x).split()[0].isdigit() else 50
-                )
+        routes_grid = None
+        routes_features_path = Path("routes_with_features.pkl")
+
+        if routes_features_path.exists():
+            routes_data = joblib.load(routes_features_path)
+
+            if isinstance(routes_data, dict) and 'routes_grid' in routes_data:
+                routes_data = routes_data['routes_grid']
+
+            routes_grid = ensure_geodataframe(routes_data)
+            routes_grid = routes_grid.drop_duplicates(subset=['latitude', 'longitude']).reset_index(drop=True)
         else:
-            routes_info['road_type_encoded'] = 2
-            routes_info['speed_limit'] = 50
-        
-        # Mapper les features OSM sur la grille
-        route_centroids = routes_info.geometry.centroid
-        route_coords = np.array([[p.y, p.x] for p in route_centroids])
-        grid_coords = routes_grid[['latitude', 'longitude']].values
-        
-        distances = cdist(grid_coords, route_coords)
-        nearest_indices = distances.argmin(axis=1)
-        
-        routes_grid['road_type'] = routes_info.iloc[nearest_indices]['road_type_encoded'].values
-        routes_grid['speed_limit'] = routes_info.iloc[nearest_indices]['speed_limit'].values
-        
-    return model, features, routes_grid
+            st.warning(
+                "⚠️ routes_with_features.pkl introuvable : recalcul des features OSM (moins précis)."
+            )
+
+            routes_osm = gpd.read_file('routes.nc')
+
+            grid_step = 0.02  # ~2km
+            buffer_meters = 200
+            lat_min, lat_max = -23.0, -19.5
+            lon_min, lon_max = 163.5, 168.0
+
+            lats = np.arange(lat_min, lat_max, grid_step)
+            lons = np.arange(lon_min, lon_max, grid_step)
+
+            grid = pd.DataFrame(
+                [(lat, lon) for lat in lats for lon in lons],
+                columns=["latitude", "longitude"]
+            )
+            grid["geometry"] = grid.apply(
+                lambda row: Point(row["longitude"], row["latitude"]), axis=1
+            )
+            grid_gdf = gpd.GeoDataFrame(grid, geometry="geometry", crs="EPSG:4326").to_crs(epsg=3857)
+
+            routes_buffer = routes_osm.to_crs(epsg=3857).buffer(buffer_meters)
+            routes_buffer_gdf = gpd.GeoDataFrame(geometry=routes_buffer, crs="EPSG:3857")
+
+            grid_on_roads = gpd.sjoin(
+                grid_gdf, routes_buffer_gdf, how="inner", predicate="intersects"
+            ).drop(columns="index_right")
+            routes_grid = grid_on_roads.to_crs(epsg=4326)
+
+            road_types_mapping = {
+                'motorway': 5, 'trunk': 4, 'primary': 3,
+                'secondary': 2, 'tertiary': 2, 'residential': 1,
+                'unclassified': 1, 'service': 1
+            }
+
+            routes_info = routes_osm.to_crs(epsg=4326).copy()
+            if 'highway' in routes_info.columns:
+                def get_road_type(highway):
+                    if isinstance(highway, (np.ndarray, list)):
+                        highway = highway[0] if len(highway) > 0 else 'unclassified'
+                    highway = str(highway) if highway is not None else 'unclassified'
+                    return road_types_mapping.get(highway, 1)
+
+                routes_info['road_type_encoded'] = routes_info['highway'].apply(get_road_type)
+                routes_info['speed_limit'] = routes_info.get('maxspeed', 50).fillna(50)
+
+                if routes_info['speed_limit'].dtype == 'object':
+                    routes_info['speed_limit'] = routes_info['speed_limit'].apply(
+                        lambda x: int(str(x).split()[0]) if isinstance(x, str) and str(x).split()[0].isdigit() else 50
+                    )
+            else:
+                routes_info['road_type_encoded'] = 2
+                routes_info['speed_limit'] = 50
+
+            route_centroids = routes_info.geometry.centroid
+            route_coords = np.array([[p.y, p.x] for p in route_centroids])
+            grid_coords = routes_grid[['latitude', 'longitude']].values
+
+            distances = cdist(grid_coords, route_coords)
+            nearest_indices = distances.argmin(axis=1)
+
+            routes_grid['road_type'] = routes_info.iloc[nearest_indices]['road_type_encoded'].values
+            routes_grid['speed_limit'] = routes_info.iloc[nearest_indices]['speed_limit'].values
+
+            routes_grid = ensure_geodataframe(routes_grid)
+            routes_grid = routes_grid.drop_duplicates(subset=['latitude', 'longitude']).reset_index(drop=True)
+
+        return model, features, routes_grid, encoder
+
+
+def encode_atm_value(encoder, atm_value):
+    """Mappe la condition météo brute vers la valeur attendue par le modèle."""
+    if encoder is None:
+        return atm_value
+    try:
+        return int(encoder.transform([atm_value])[0])
+    except (ValueError, AttributeError):
+        st.warning(
+            "🌦️ Condition météo inconnue de l'encodeur, utilisation de la valeur brute."
+        )
+        return atm_value
+
+
+def ensure_geodataframe(data):
+    """Garantit un GeoDataFrame sur backend numpy pour éviter les soucis pyarrow."""
+    if isinstance(data, gpd.GeoDataFrame):
+        base = data.copy()
+        if base.crs is None:
+            base = base.set_crs(epsg=4326)
+    else:
+        base = pd.DataFrame(data).copy()
+        if 'geometry' in base.columns:
+            geom_values = base['geometry']
+        else:
+            geom_values = gpd.points_from_xy(base['longitude'], base['latitude'])
+        base = gpd.GeoDataFrame(
+            base.drop(columns='geometry', errors='ignore'),
+            geometry=geom_values,
+            crs="EPSG:4326"
+        )
+
+    columns_numpy = {}
+    for col in base.columns:
+        if col == 'geometry':
+            columns_numpy[col] = np.array(base.geometry)
+        else:
+            series = base[col]
+            if hasattr(series, 'to_numpy'):
+                columns_numpy[col] = series.to_numpy()
+            else:
+                columns_numpy[col] = series.values
+
+    return gpd.GeoDataFrame(columns_numpy, geometry='geometry', crs=base.crs)
 
 # ==========================================
 # FONCTION DE CALCUL DES FEATURES
 # ==========================================
-def calculate_features(routes_grid, selected_date, atm_code, hour):
-    """Calcule toutes les features enrichies pour une heure donnée"""
+def calculate_features(routes_grid, selected_date, atm_value, hour):
+    """Calcule toutes les features enrichies pour une heure donnée."""
     
     # Extraire coordonnées depuis la géométrie
     grid_lats = routes_grid.geometry.y.values
@@ -202,7 +260,7 @@ def calculate_features(routes_grid, selected_date, atm_code, hour):
         'hour': hour,
         'dayofweek': selected_date.weekday(),
         'month': selected_date.month,
-        'atm': atm_code
+        'atm': atm_value
     })
     
     # ==========================================
@@ -234,18 +292,22 @@ def calculate_features(routes_grid, selected_date, atm_code, hour):
     # ==========================================
     # 3. FEATURES DE DENSITÉ ET PROXIMITÉ
     # ==========================================
-    # Approximation pour la démo (en production: charger depuis DB)
-    hourly_data['accident_density_5km'] = 2.0
-    
-    # Distance à Nouméa
-    noumea_center = (-22.2758, 166.4580)
-    hourly_data['dist_to_noumea_km'] = hourly_data.apply(
-        lambda row: geodesic(
-            (row['latitude'], row['longitude']),
-            noumea_center
-        ).km,
-        axis=1
-    )
+    if 'accident_density_5km' in routes_grid.columns:
+        hourly_data['accident_density_5km'] = routes_grid['accident_density_5km'].values
+    else:
+        hourly_data['accident_density_5km'] = 2.0
+
+    if 'dist_to_noumea_km' in routes_grid.columns:
+        hourly_data['dist_to_noumea_km'] = routes_grid['dist_to_noumea_km'].values
+    else:
+        noumea_center = (-22.2758, 166.4580)
+        hourly_data['dist_to_noumea_km'] = hourly_data.apply(
+            lambda row: geodesic(
+                (row['latitude'], row['longitude']),
+                noumea_center
+            ).km,
+            axis=1
+        )
     
     # ==========================================
     # 4. FEATURES TEMPORELLES AVANCÉES
@@ -266,7 +328,7 @@ def calculate_features(routes_grid, selected_date, atm_code, hour):
 # FONCTION DE PRÉDICTION
 # ==========================================
 @st.cache_data
-def generate_predictions(_model, _routes_grid, features, selected_date, atm_code, use_threshold, threshold_val=0.7, top_n_val=5):
+def generate_predictions(_model, _routes_grid, features, selected_date, atm_value, use_threshold, threshold_val=0.7, top_n_val=5):
     """Génère les prédictions pour toutes les heures"""
     
     predictions_by_hour = []
@@ -279,7 +341,7 @@ def generate_predictions(_model, _routes_grid, features, selected_date, atm_code
         progress_bar.progress((hour + 1) / 24)
         
         # Calculer les features pour cette heure
-        hourly_data = calculate_features(_routes_grid, selected_date, atm_code, hour)
+        hourly_data = calculate_features(_routes_grid, selected_date, atm_value, hour)
         
         # Prédictions
         probas = _model.predict_proba(hourly_data[features])[:, 1]
@@ -402,7 +464,9 @@ def create_map(predictions, routes_grid):
 # ==========================================
 # CHARGEMENT DES DONNÉES
 # ==========================================
-model, features, routes_grid = load_model_and_data()
+model, features, routes_grid, atm_encoder = load_model_and_data()
+
+atm_encoded_value = encode_atm_value(atm_encoder, atm_code)
 
 st.sidebar.success(f"✅ Modèle chargé: {type(model).__name__}")
 st.sidebar.info(f"📍 Grille: {len(routes_grid):,} points")
@@ -414,13 +478,13 @@ with st.spinner("🔮 Génération des prédictions..."):
     if use_threshold:
         predictions = generate_predictions(
             model, routes_grid, features, 
-            pd.to_datetime(selected_date), atm_code,
+            pd.to_datetime(selected_date), atm_encoded_value,
             True, threshold
         )
     else:
         predictions = generate_predictions(
             model, routes_grid, features,
-            pd.to_datetime(selected_date), atm_code,
+            pd.to_datetime(selected_date), atm_encoded_value,
             False, top_n_val=top_n
         )
     

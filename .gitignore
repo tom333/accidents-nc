@@ -23,3 +23,6 @@ autogluon_models/
 # Base de données
 *.duckdb
 *.duckdb.wal
+
+.tmp*
+.pytest_cache/

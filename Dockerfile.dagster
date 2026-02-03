@@ -1,0 +1,42 @@
+# syntax=docker/dockerfile:1.4
+
+# Image Dagster user-deployment avec dépendances ML/geo
+FROM python:3.13-slim
+
+# Install system dependencies for geospatial libraries + DuckDB
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gdal-bin \
+    libgdal-dev \
+    libgeos-dev \
+    libproj-dev \
+    libspatialindex-dev \
+    gcc \
+    g++ \
+    curl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv for fast package management
+COPY --from=ghcr.io/astral-sh/uv:0.4.20 /uv /bin/uv
+ENV UV_SYSTEM_PYTHON=1
+
+WORKDIR /opt/dagster/app
+
+# Copy dependency files
+COPY --link pyproject.toml .
+
+# Install Python dependencies using uv (including Dagster)
+RUN uv pip install -e .
+
+# Copy application code
+COPY --link pipeline/ ./pipeline/
+COPY --link dagster_accidents/ ./dagster_accidents/
+
+# Set PYTHONPATH to ensure imports work
+ENV PYTHONPATH=/opt/dagster/app
+
+# Expose port for Dagster gRPC server
+EXPOSE 4000
+
+# Command will be provided by Dagster Helm chart
+# (usually runs `dagster api grpc --python-file ...` or similar)

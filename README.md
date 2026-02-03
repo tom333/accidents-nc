@@ -32,13 +32,20 @@ Ce projet implémente un **classificateur binaire géospatial-temporel** pour pr
 
 ```
 accidents/
-├── accident_fetch_data.py     # Notebook Marimo : Pipeline d'entraînement complet
+├── notebooks/
+│   ├── 01_ingest_raw.py        # Marimo – ingestion CSV → DuckDB (schema raw)
+│   ├── 02_enrich_features.py   # Marimo – features géospatiales + négatifs (schema features)
+│   ├── 03_prepare_datasets.py  # Marimo – splits train/test + encoder (schema datasets)
+│   └── 04_model_training.py    # Marimo – tuning + entraînement multi-modèles
+├── pipeline/                   # Fonctions partagées entre notebooks
+├── accident_fetch_data.py      # Notebook legacy (pipeline monolithique)
 ├── predict_map.py              # Notebook Marimo : Visualisation interactive des prédictions
 ├── predict_daily.py            # Script Python : Génération automatique prédictions quotidiennes
+├── data/accidents_pipeline.duckdb # DuckDB local reliant les notebooks
 ├── routes.nc                   # Cache GeoJSON : Réseau routier OSM (~50MB, git-ignoré)
-├── accident_model.pkl          # Modèle entraîné (LightGBM)
+├── accident_model.pkl          # Modèle entraîné courant
 ├── atm_encoder.pkl             # Encodeur conditions météo
-├── features.pkl                # Liste des features
+├── features.pkl                # Liste des features ordonnées
 ├── predictions.duckdb          # Base DuckDB : Prédictions quotidiennes
 ├── QUERIES.md                  # Requêtes SQL prêtes à l'emploi
 └── README.md                   # Cette documentation
@@ -88,9 +95,35 @@ geopy                # Distance géodésique
 
 ## 📚 Utilisation
 
+### 🔁 Nouveau pipeline modulaire (DuckDB)
+
+Les 4 notebooks Marimo du dossier `notebooks/` fonctionnent comme une chaîne : chacun consomme les tables DuckDB créées par le précédent avant d'écrire ses propres outputs. Toutes les données transitent par `data/accidents_pipeline.duckdb`.
+
+| Étape | Notebook | Tables écrites | Description |
+|-------|----------|----------------|-------------|
+| 1 | `01_ingest_raw.py` | `raw.caracteristiques`, `raw.usagers`, `raw.accidents_nc` | Ingestion CSV/URLs et normalisation des colonnes clés (datetime, lat/lon, atm). |
+| 2 | `02_enrich_features.py` | `features.full_dataset` | Génération des négatifs spatialement sûrs, rattachement des features OSM/densité, ajout des features temporelles avancées. |
+| 3 | `03_prepare_datasets.py` | `datasets.train`, `datasets.test`, `datasets.feature_metadata` | Encodage `atm`, drop NA, split stratifié, sauvegarde `atm_encoder.pkl` et `features.pkl`. |
+| 4 | `04_model_training.py` | Logs MLflow + artefacts `.pkl` | Tuning Optuna (CatBoost/LGBM/XGBoost) + ensembles TabNet/MLP/logistic, export `accident_model.pkl`. |
+
+Pour exécuter l’ensemble :
+
+```bash
+marimo run notebooks/01_ingest_raw.py
+marimo run notebooks/02_enrich_features.py
+marimo run notebooks/03_prepare_datasets.py
+marimo run notebooks/04_model_training.py
+```
+
+Chaque notebook peut aussi être ouvert en mode interactif (`marimo edit ...`) pour ajuster les paramètres et visualiser les outputs intermédiaires (comptes DuckDB, previews, etc.).
+
 ### 1️⃣ Entraînement du Modèle
 
-**Notebook Marimo** : `accident_fetch_data.py`
+> 💡 **Recommandé** : exécuter les 4 notebooks modulaires (`01_` → `04_`) pour bénéficier du stockage DuckDB et de la reprise par étape.
+>
+> Le notebook ci-dessous reste disponible pour des itérations rapides mais sera progressivement retiré.
+
+**Notebook Marimo (legacy)** : `accident_fetch_data.py`
 
 ```bash
 marimo edit accident_fetch_data.py

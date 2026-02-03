@@ -3,17 +3,29 @@ import marimo
 __generated_with = "0.19.6"
 app = marimo.App(width="medium")
 
+    EmbeddingNeuralNetWrapper,
 
 @app.cell
+    LogisticRegression,
+    Pipeline,
+    StandardScaler,
+    TabNetClassifier,
+    TabNetServingModel,
+    XGBClassifier,
 def _():
     import marimo as mo
+    build_categorical_mappings,
+    encode_categorical_matrix,
     import duckdb
+    np,
     import polars as pl
     import pandas as pd
     import osmnx as ox
     import geopandas as gpd
     from shapely.ops import unary_union
     import os
+    torch,
+    train_embedding_model,
     import numpy as np
     import glob
     import joblib
@@ -341,9 +353,8 @@ def _(CONFIG, Point, areas, gpd, joblib, np, os, ox, pd):
 
 @app.cell
 def _(CONFIG, accidents, accidents_filtres, gpd, np, pd, pl, routes_grid):
-    # ÉTAPE 1 : Calculer le nombre d'échantillons négatifs (ratio 3:1)
+    # ÉTAPE 1 : Calculer le nombre d'échantillons négatifs (~nombre annuel de "non-accidents")
     n_samples = len(accidents_filtres) * CONFIG['n_negative_samples_ratio']
-    # Ex: 1000 accidents × 3 = 3000 échantillons négatifs
 
     # ÉTAPE 2 : Vérifier qu'on a des données valides
     if len(routes_grid) > 0 and len(accidents_filtres) > 0:
@@ -652,33 +663,289 @@ def _(accidents_filtres, mo, negative_samples, np, pl, routes_grid):
 @app.cell
 def _():
     from sklearn.model_selection import train_test_split
-    from sklearn.preprocessing import LabelEncoder
-    from sklearn.base import ClassifierMixin
-    from sklearn.ensemble import RandomForestClassifier
-    from sklearn.model_selection import RandomizedSearchCV
+    from sklearn.preprocessing import LabelEncoder, StandardScaler
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.pipeline import Pipeline
     from xgboost import XGBClassifier
     from lightgbm import LGBMClassifier
     from catboost import CatBoostClassifier
-    from imblearn.ensemble import BalancedRandomForestClassifier
-    from sklearn.metrics import make_scorer, recall_score, precision_score, f1_score, roc_auc_score
+    from sklearn.metrics import recall_score, precision_score, f1_score, roc_auc_score
     import time
     import optuna
     from optuna.integration import CatBoostPruningCallback, LightGBMPruningCallback
+    from pytorch_tabnet.tab_model import TabNetClassifier
+    import torch
+    from torch import nn
+    from torch.utils.data import DataLoader, TensorDataset
+    import copy
+    import io
     return (
         CatBoostClassifier,
         CatBoostPruningCallback,
+        DataLoader,
+        LogisticRegression,
         LGBMClassifier,
         LabelEncoder,
         LightGBMPruningCallback,
+        Pipeline,
+        StandardScaler,
+        TabNetClassifier,
+        TensorDataset,
         XGBClassifier,
+        copy,
         f1_score,
+        io,
+        nn,
         optuna,
         precision_score,
         recall_score,
         roc_auc_score,
         time,
+        torch,
         train_test_split,
     )
+
+
+@app.cell
+def _(DataLoader, TabNetClassifier, TensorDataset, copy, io, nn, np, torch):
+
+    class TabNetServingModel:
+        def __init__(self, trained_model, init_params):
+            self.model = trained_model
+            self.init_params = init_params
+
+        def predict(self, X):
+            data = X.values if hasattr(X, 'values') else X
+            return self.model.predict(np.asarray(data, dtype=np.float32))
+
+        def predict_proba(self, X):
+            data = X.values if hasattr(X, 'values') else X
+            return self.model.predict_proba(np.asarray(data, dtype=np.float32))
+
+        def __getstate__(self):
+            buffer = io.BytesIO()
+            torch.save(self.model.network.state_dict(), buffer)
+            return {
+                'init_params': self.init_params,
+                'state_bytes': buffer.getvalue(),
+            }
+
+        def __setstate__(self, state):
+            self.init_params = state['init_params']
+            buffer = io.BytesIO(state['state_bytes'])
+            model = TabNetClassifier(**self.init_params)
+            model.network.load_state_dict(torch.load(buffer, map_location='cpu'))
+            model.device_name = 'cpu'
+            self.model = model
+
+
+    class EmbeddingMLP(nn.Module):
+        def __init__(self, cat_dims, cont_dim):
+            super().__init__()
+            self.cat_dims = cat_dims
+            self.cont_dim = cont_dim
+            self.embeddings = nn.ModuleList([
+                nn.Embedding(num_embeddings=dim, embedding_dim=min(16, max(4, dim // 2)))
+                for dim in cat_dims
+            ])
+            emb_dim = sum(emb.embedding_dim for emb in self.embeddings)
+            input_dim = emb_dim + cont_dim
+            if input_dim == 0:
+                input_dim = 1
+            hidden_dim = max(64, input_dim * 2)
+            self.network = nn.Sequential(
+                nn.Linear(input_dim, hidden_dim),
+                nn.ReLU(),
+                nn.Dropout(0.3),
+                nn.Linear(hidden_dim, hidden_dim // 2),
+                nn.ReLU(),
+                nn.Dropout(0.2),
+                nn.Linear(hidden_dim // 2, 1),
+            )
+
+        def forward(self, x_cat, x_cont):
+            if self.embeddings:
+                embed_out = [emb(x_cat[:, idx]) for idx, emb in enumerate(self.embeddings)]
+                x = torch.cat(embed_out, dim=1)
+                if x_cont.shape[1] > 0:
+                    x = torch.cat([x, x_cont], dim=1)
+            else:
+                x = x_cont
+            return self.network(x)
+
+
+    class EmbeddingNeuralNetWrapper:
+        def __init__(self, model, cat_cols, cont_cols, cat_mappings, scaler):
+            self.model = model.cpu()
+            self.cat_cols = cat_cols
+            self.cont_cols = cont_cols
+            self.cat_mappings = cat_mappings
+            self.scaler = scaler
+
+        def _encode_categorical(self, df):
+            if not self.cat_cols:
+                return np.zeros((len(df), 0), dtype=np.int64)
+            encoded = []
+            for col in self.cat_cols:
+                meta = self.cat_mappings[col]
+                mapping = meta['mapping']
+                unknown_index = meta['unknown_index']
+                encoded.append(df[col].map(mapping).fillna(unknown_index).astype(np.int64).to_numpy())
+            return np.stack(encoded, axis=1)
+
+        def _encode_continuous(self, df):
+            if not self.cont_cols:
+                return np.zeros((len(df), 0), dtype=np.float32)
+            values = df[self.cont_cols].to_numpy(dtype=np.float32)
+            if self.scaler is not None:
+                values = self.scaler.transform(df[self.cont_cols]).astype(np.float32)
+            return values
+
+        def _prepare_tensors(self, X):
+            cat_array = self._encode_categorical(X)
+            cont_array = self._encode_continuous(X)
+            cat_tensor = torch.tensor(cat_array, dtype=torch.long)
+            cont_tensor = torch.tensor(cont_array, dtype=torch.float32)
+            return cat_tensor, cont_tensor
+
+        def predict_proba(self, X):
+            if hasattr(X, 'values'):
+                data = X
+            else:
+                raise ValueError("Le modèle attend un DataFrame en entrée.")
+            cat_tensor, cont_tensor = self._prepare_tensors(data)
+            self.model.eval()
+            with torch.no_grad():
+                logits = self.model(cat_tensor, cont_tensor)
+                probs = torch.sigmoid(logits).squeeze().cpu().numpy()
+            if probs.ndim == 0:
+                probs = np.array([probs])
+            return np.column_stack([1 - probs, probs])
+
+        def predict(self, X):
+            return (self.predict_proba(X)[:, 1] >= 0.5).astype(int)
+
+        def __getstate__(self):
+            buffer = io.BytesIO()
+            torch.save(self.model.state_dict(), buffer)
+            return {
+                'state_bytes': buffer.getvalue(),
+                'cat_cols': self.cat_cols,
+                'cont_cols': self.cont_cols,
+                'cat_mappings': self.cat_mappings,
+                'scaler': self.scaler,
+            }
+
+        def __setstate__(self, state):
+            self.cat_cols = state['cat_cols']
+            self.cont_cols = state['cont_cols']
+            self.cat_mappings = state['cat_mappings']
+            self.scaler = state['scaler']
+            cat_dims = [meta['unknown_index'] + 1 for meta in self.cat_mappings.values()]
+            model = EmbeddingMLP(cat_dims, len(self.cont_cols))
+            buffer = io.BytesIO(state['state_bytes'])
+            model.load_state_dict(torch.load(buffer, map_location='cpu'))
+            model.eval()
+            self.model = model
+
+
+    def build_categorical_mappings(df, categorical_cols):
+        mappings = {}
+        dims = []
+        for col in categorical_cols:
+            if col not in df.columns:
+                continue
+            uniques = sorted(df[col].dropna().unique().tolist())
+            mapping = {val: idx for idx, val in enumerate(uniques)}
+            unknown_index = len(mapping)
+            mappings[col] = {'mapping': mapping, 'unknown_index': unknown_index}
+            dims.append(unknown_index + 1)
+        return mappings, dims
+
+
+    def encode_categorical_matrix(df, mappings):
+        if not mappings:
+            return np.zeros((len(df), 0), dtype=np.int64)
+        encoded = []
+        for col, meta in mappings.items():
+            mapping = meta['mapping']
+            unknown_index = meta['unknown_index']
+            encoded.append(df[col].map(mapping).fillna(unknown_index).astype(np.int64).to_numpy())
+        return np.stack(encoded, axis=1)
+
+
+    def train_embedding_model(
+        cat_train,
+        cont_train,
+        y_train_array,
+        cat_valid,
+        cont_valid,
+        y_valid_array,
+        cat_dims,
+        cont_dim,
+        pos_weight,
+        device,
+        max_epochs=50,
+        batch_size=512,
+    ):
+        model = EmbeddingMLP(cat_dims, cont_dim).to(device)
+        pos_weight_tensor = torch.tensor([pos_weight], dtype=torch.float32, device=device)
+        criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight_tensor)
+        optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-4)
+
+        def to_tensor(array, dtype):
+            if array.size == 0:
+                return torch.zeros((array.shape[0], 0), dtype=dtype)
+            return torch.tensor(array, dtype=dtype)
+
+        train_dataset = TensorDataset(
+            to_tensor(cat_train, torch.long),
+            to_tensor(cont_train, torch.float32),
+            torch.tensor(y_train_array.reshape(-1, 1), dtype=torch.float32),
+        )
+        train_loader = DataLoader(train_dataset, batch_size=min(batch_size, len(train_dataset)), shuffle=True)
+
+        val_cat = to_tensor(cat_valid, torch.long).to(device)
+        val_cont = to_tensor(cont_valid, torch.float32).to(device)
+        val_target = torch.tensor(y_valid_array.reshape(-1, 1), dtype=torch.float32, device=device)
+
+        best_state = copy.deepcopy(model.state_dict())
+        best_val = float('inf')
+        patience_counter = 0
+        patience = 6
+
+        for _ in range(max_epochs):
+            model.train()
+            for batch_cat, batch_cont, batch_target in train_loader:
+                batch_cat = batch_cat.to(device)
+                batch_cont = batch_cont.to(device)
+                batch_target = batch_target.to(device)
+
+                optimizer.zero_grad()
+                logits = model(batch_cat, batch_cont)
+                loss = criterion(logits, batch_target)
+                loss.backward()
+                optimizer.step()
+
+            model.eval()
+            with torch.no_grad():
+                val_logits = model(val_cat, val_cont)
+                val_loss = criterion(val_logits, val_target).item()
+
+            if val_loss + 1e-4 < best_val:
+                best_val = val_loss
+                best_state = copy.deepcopy(model.state_dict())
+                patience_counter = 0
+            else:
+                patience_counter += 1
+                if patience_counter >= patience:
+                    break
+
+        model.load_state_dict(best_state)
+        model.eval()
+        model.to('cpu')
+        return model
+    return
 
 
 @app.cell
@@ -908,6 +1175,10 @@ def _(
     tuned_models = {}
     tuning_results = []
     model_run_ids = {}  # Stocker les run_id de chaque modèle
+    non_registerable_models = set()
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    X_train_array = X_train.to_numpy(dtype=np.float32)
+    X_test_array = X_test.to_numpy(dtype=np.float32)
 
     # CatBoost
     print("🐱 CatBoost final...")
@@ -1040,6 +1311,211 @@ def _(
         })
         print(f"   Recall: {recall_xgb:.3f} | F1: {f1_xgb:.3f} | AUC: {auc_xgb:.3f}")
 
+    # Régression logistique
+    print("📐 Régression logistique (baseline linéaire)...")
+    with mlflow.start_run(run_name="LogisticRegression", nested=True) as run:
+        model_run_ids['LogisticRegression'] = run.info.run_id
+
+        logistic_pipeline = Pipeline([
+            ('scaler', StandardScaler()),
+            ('log_reg', LogisticRegression(
+                class_weight='balanced',
+                C=0.5,
+                max_iter=2000,
+                solver='lbfgs',
+                random_state=CONFIG['random_state']
+            ))
+        ])
+        logistic_pipeline.fit(X_train, y_train)
+        y_pred_log = logistic_pipeline.predict(X_test)
+        y_proba_log = logistic_pipeline.predict_proba(X_test)[:, 1]
+
+        recall_log = recall_score(y_test, y_pred_log, pos_label=1)
+        precision_log = precision_score(y_test, y_pred_log, pos_label=1)
+        f1_log = f1_score(y_test, y_pred_log, pos_label=1)
+        auc_log = roc_auc_score(y_test, y_proba_log)
+
+        mlflow.log_params({'C': 0.5, 'solver': 'lbfgs'})
+        mlflow.log_metrics({
+            'recall': recall_log,
+            'precision': precision_log,
+            'f1_score': f1_log,
+            'auc_roc': auc_log
+        })
+        mlflow.sklearn.log_model(logistic_pipeline, "model")
+
+        tuned_models['LogisticRegression'] = logistic_pipeline
+        tuning_results.append({
+            'Modèle': 'LogisticRegression',
+            'Recall': f"{recall_log:.3f}",
+            'Precision': f"{precision_log:.3f}",
+            'F1-Score': f"{f1_log:.3f}",
+            'AUC-ROC': f"{auc_log:.3f}",
+            'Temps (s)': 'n/a',
+            '_recall_raw': recall_log
+        })
+        print(f"   Recall: {recall_log:.3f} | F1: {f1_log:.3f} | AUC: {auc_log:.3f}")
+
+    # TabNet
+    print("🧠 TabNet (Deep Learning tabulaire)...")
+    try:
+        tabnet_cat_cols = [col for col in ['atm', 'road_type', 'is_weekend', 'is_holiday', 'school_holidays'] if col in X_train.columns]
+        cat_idxs = [X_train.columns.get_loc(col) for col in tabnet_cat_cols]
+        cat_dims = [int(X_train[col].nunique()) for col in tabnet_cat_cols]
+        tabnet_init_params = {
+            'n_d': 32,
+            'n_a': 32,
+            'n_steps': 5,
+            'gamma': 1.5,
+            'cat_idxs': cat_idxs,
+            'cat_dims': cat_dims,
+            'cat_emb_dim': [min(16, dim + 1) for dim in cat_dims],
+            'n_independent': 2,
+            'n_shared': 2,
+            'seed': CONFIG['random_state'],
+            'verbose': 0
+        }
+        tabnet_model = TabNetClassifier(**tabnet_init_params)
+        tabnet_weights = np.where(y_train.to_numpy() == 1, tuning_scale_weight, 1.0)
+        start = time.time()
+        tabnet_model.fit(
+            X_train_array,
+            y_train.to_numpy(),
+            eval_set=[(X_test_array, y_test.to_numpy())],
+            eval_metric=['auc'],
+            max_epochs=200,
+            patience=30,
+            batch_size=1024,
+            virtual_batch_size=128,
+            weights=tabnet_weights,
+        )
+        tabnet_time = time.time() - start
+        tabnet_wrapper = TabNetServingModel(tabnet_model, tabnet_init_params)
+        y_pred_tab = tabnet_wrapper.predict(X_test)
+        y_proba_tab = tabnet_wrapper.predict_proba(X_test)[:, 1]
+
+        recall_tab = recall_score(y_test, y_pred_tab, pos_label=1)
+        precision_tab = precision_score(y_test, y_pred_tab, pos_label=1)
+        f1_tab = f1_score(y_test, y_pred_tab, pos_label=1)
+        auc_tab = roc_auc_score(y_test, y_proba_tab)
+
+        with mlflow.start_run(run_name="TabNet", nested=True) as run:
+            model_run_ids['TabNet'] = run.info.run_id
+            mlflow.log_metrics({
+                'recall': recall_tab,
+                'precision': precision_tab,
+                'f1_score': f1_tab,
+                'auc_roc': auc_tab,
+                'training_time_seconds': tabnet_time
+            })
+            mlflow.log_params({
+                'n_d': tabnet_init_params['n_d'],
+                'n_steps': tabnet_init_params['n_steps'],
+                'gamma': tabnet_init_params['gamma'],
+                'cat_features': len(tabnet_cat_cols),
+                'device': str(device)
+            })
+
+        tuned_models['TabNet'] = tabnet_wrapper
+        non_registerable_models.add('TabNet')
+        tuning_results.append({
+            'Modèle': 'TabNet',
+            'Recall': f"{recall_tab:.3f}",
+            'Precision': f"{precision_tab:.3f}",
+            'F1-Score': f"{f1_tab:.3f}",
+            'AUC-ROC': f"{auc_tab:.3f}",
+            'Temps (s)': f"{tabnet_time:.0f}",
+            '_recall_raw': recall_tab
+        })
+        print(f"   Recall: {recall_tab:.3f} | F1: {f1_tab:.3f} | AUC: {auc_tab:.3f}")
+    except Exception as exc:
+        print(f"   ⚠️ TabNet non entraîné : {exc}")
+
+    # Réseau de neurones avec embeddings
+    print("🧬 Réseau de neurones avec embeddings...")
+    try:
+        neural_cat_cols = [col for col in ['atm', 'road_type'] if col in X_train.columns]
+        cat_mappings, cat_dims = build_categorical_mappings(X_train, neural_cat_cols)
+        if neural_cat_cols:
+            cat_train_matrix = encode_categorical_matrix(X_train[neural_cat_cols], cat_mappings)
+            cat_test_matrix = encode_categorical_matrix(X_test[neural_cat_cols], cat_mappings)
+        else:
+            cat_train_matrix = np.zeros((len(X_train), 0), dtype=np.int64)
+            cat_test_matrix = np.zeros((len(X_test), 0), dtype=np.int64)
+
+        cont_cols_nn = [col for col in X_train.columns if col not in neural_cat_cols]
+        if cont_cols_nn:
+            cont_scaler = StandardScaler()
+            cont_train_matrix = cont_scaler.fit_transform(X_train[cont_cols_nn]).astype(np.float32)
+            cont_test_matrix = cont_scaler.transform(X_test[cont_cols_nn]).astype(np.float32)
+        else:
+            cont_scaler = None
+            cont_train_matrix = np.zeros((len(X_train), 0), dtype=np.float32)
+            cont_test_matrix = np.zeros((len(X_test), 0), dtype=np.float32)
+
+        y_train_array = y_train.to_numpy().astype(np.float32)
+        y_test_array = y_test.to_numpy().astype(np.float32)
+
+        start = time.time()
+        neural_model = train_embedding_model(
+            cat_train_matrix,
+            cont_train_matrix,
+            y_train_array,
+            cat_test_matrix,
+            cont_test_matrix,
+            y_test_array,
+            cat_dims,
+            len(cont_cols_nn),
+            tuning_scale_weight,
+            device,
+        )
+        neural_time = time.time() - start
+
+        neural_wrapper = EmbeddingNeuralNetWrapper(
+            model=neural_model,
+            cat_cols=neural_cat_cols,
+            cont_cols=cont_cols_nn,
+            cat_mappings=cat_mappings,
+            scaler=cont_scaler,
+        )
+        y_pred_nn = neural_wrapper.predict(X_test)
+        y_proba_nn = neural_wrapper.predict_proba(X_test)[:, 1]
+
+        recall_nn = recall_score(y_test, y_pred_nn, pos_label=1)
+        precision_nn = precision_score(y_test, y_pred_nn, pos_label=1)
+        f1_nn = f1_score(y_test, y_pred_nn, pos_label=1)
+        auc_nn = roc_auc_score(y_test, y_proba_nn)
+
+        with mlflow.start_run(run_name="NeuralEmbedding", nested=True) as run:
+            model_run_ids['NeuralEmbedding'] = run.info.run_id
+            mlflow.log_metrics({
+                'recall': recall_nn,
+                'precision': precision_nn,
+                'f1_score': f1_nn,
+                'auc_roc': auc_nn,
+                'training_time_seconds': neural_time
+            })
+            mlflow.log_params({
+                'cat_features': len(neural_cat_cols),
+                'cont_features': len(cont_cols_nn),
+                'device': str(device)
+            })
+
+        tuned_models['NeuralEmbedding'] = neural_wrapper
+        non_registerable_models.add('NeuralEmbedding')
+        tuning_results.append({
+            'Modèle': 'NeuralEmbedding',
+            'Recall': f"{recall_nn:.3f}",
+            'Precision': f"{precision_nn:.3f}",
+            'F1-Score': f"{f1_nn:.3f}",
+            'AUC-ROC': f"{auc_nn:.3f}",
+            'Temps (s)': f"{neural_time:.0f}",
+            '_recall_raw': recall_nn
+        })
+        print(f"   Recall: {recall_nn:.3f} | F1: {f1_nn:.3f} | AUC: {auc_nn:.3f}")
+    except Exception as exc:
+        print(f"   ⚠️ Réseau de neurones non entraîné : {exc}")
+
     # Tableau récapitulatif
     tuning_results_df_full = pd.DataFrame(tuning_results).sort_values('_recall_raw', ascending=False)
     best_recall_value = tuning_results_df_full.iloc[0]['_recall_raw']
@@ -1060,13 +1536,19 @@ def _(
     mlflow.log_table(tuning_results_df, "comparison_table.json")
 
     # Enregistrer le meilleur modèle dans le Model Registry
-    best_model_run_id = model_run_ids[tuned_best_model_name]
-    model_uri = f"runs:/{best_model_run_id}/model"
-    model_details = mlflow.register_model(
-        model_uri=model_uri,
-        name="accidents-nc-best-model"
-    )
-    print(f"\n📦 Modèle enregistré dans MLflow Registry: {model_details.name} (version {model_details.version})")
+    best_model_run_id = model_run_ids.get(tuned_best_model_name)
+    if tuned_best_model_name in non_registerable_models or not best_model_run_id:
+        print(f"\nℹ️ Modèle {tuned_best_model_name} non enregistré dans le registry (format personnalisé).")
+    else:
+        model_uri = f"runs:/{best_model_run_id}/model"
+        try:
+            model_details = mlflow.register_model(
+                model_uri=model_uri,
+                name="accidents-nc-best-model"
+            )
+            print(f"\n📦 Modèle enregistré dans MLflow Registry: {model_details.name} (version {model_details.version})")
+        except Exception as exc:
+            print(f"\n⚠️ Enregistrement MLflow impossible pour {tuned_best_model_name}: {exc}")
 
     # Fermer le run parent
     mlflow.end_run()

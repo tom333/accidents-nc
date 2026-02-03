@@ -6,6 +6,8 @@ metadata:
   labels:
     app: dagster-user-code
     component: accidents
+  annotations:
+    dagster/image: "localhost:32000/accidents-dagster:latest"
 spec:
   replicas: 1
   selector:

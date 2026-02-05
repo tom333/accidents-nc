@@ -24,18 +24,19 @@ spec:
       - name: user-code
         image: localhost:32000/accidents-dagster:latest
         imagePullPolicy: Always
-        command:
-          - dagster
-          - api
-          - grpc
-          - --module-name
-          - dagster_accidents.repository
-          - --attribute
-          - defs
-          - --port
-          - "4000"
-          - --host
-          - "0.0.0.0"
+        # Command définie dans le Dockerfile (entrypoint.sh parse dbt puis lance dagster)
+        # command:
+        #   - dagster
+        #   - api
+        #   - grpc
+        #   - --module-name
+        #   - dagster_accidents.repository
+        #   - --attribute
+        #   - defs
+        #   - --port
+        #   - "4000"
+        #   - --host
+        #   - "0.0.0.0"
         ports:
         - containerPort: 4000
           name: grpc
@@ -84,6 +85,15 @@ spec:
             secretKeyRef:
               name: postgresql-password
               key: password
+        # Configuration PostgreSQL pour dbt
+        - name: POSTGRES_HOST
+          value: "postgresql.datalab.svc.cluster.local"
+        - name: POSTGRES_PORT
+          value: "5432"
+        - name: POSTGRES_DBNAME
+          value: "data"
+        - name: POSTGRES_USER
+          value: "data"
         resources:
           requests:
             memory: "2Gi"

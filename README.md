@@ -10,6 +10,8 @@ Ce projet implémente un **classificateur binaire géospatial-temporel** pour pr
 - **Réseau routier OSM** : 30+ communes de Nouvelle-Calédonie
 - **Features temporelles** : Heure, jour de la semaine, mois, conditions météo
 - **Échantillonnage négatif intelligent** : Exclusion spatiale (300m) et distribution temporelle (85/15)
+- **Orchestration Dagster** : Pipeline industrialisé sur Kubernetes avec architecture médaillons
+- **DuckLake** : Lakehouse moderne (DuckDB + PostgreSQL catalog + S3 storage)
 
 ### 🎯 Performances du Modèle
 
@@ -30,25 +32,83 @@ Ce projet implémente un **classificateur binaire géospatial-temporel** pour pr
 
 ## 🏗️ Architecture du Projet
 
+### 🐳 Infrastructure (Production)
+
+```
+Kubernetes Cluster (microk8s)
+├── Namespace: dagster
+│   ├── dagster-webserver       # UI Dagster (https://dagster.tgu.ovh)
+│   ├── dagster-daemon          # Scheduler & sensors
+│   └── dagster-user-deployment # User code (assets bronze/silver/gold)
+├── Namespace: datalab
+│   └── postgresql              # DuckLake catalog (métadonnées tables)
+└── Namespace: ia-lab
+    └── rustfs-svc              # S3 compatible (https://rustfs.tgu.ovh)
+```
+
+### 📂 Code Source
+
 ```
 accidents/
-├── notebooks/
-│   ├── 01_ingest_raw.py        # Marimo – ingestion CSV → DuckDB (schema raw)
-│   ├── 02_enrich_features.py   # Marimo – features géospatiales + négatifs (schema features)
-│   ├── 03_prepare_datasets.py  # Marimo – splits train/test + encoder (schema datasets)
-│   └── 04_model_training.py    # Marimo – tuning + entraînement multi-modèles
-├── pipeline/                   # Fonctions partagées entre notebooks
-├── accident_fetch_data.py      # Notebook legacy (pipeline monolithique)
-├── predict_map.py              # Notebook Marimo : Visualisation interactive des prédictions
-├── predict_daily.py            # Script Python : Génération automatique prédictions quotidiennes
-├── data/accidents_pipeline.duckdb # DuckDB local reliant les notebooks
-├── routes.nc                   # Cache GeoJSON : Réseau routier OSM (~50MB, git-ignoré)
-├── accident_model.pkl          # Modèle entraîné courant
-├── atm_encoder.pkl             # Encodeur conditions météo
-├── features.pkl                # Liste des features ordonnées
-├── predictions.duckdb          # Base DuckDB : Prédictions quotidiennes
-├── QUERIES.md                  # Requêtes SQL prêtes à l'emploi
+├── dagster_accidents/          # Assets Dagster (orchestration)
+│   ├── assets_prod.py          # Bronze/Silver/Gold (sans training)
+│   ├── assets.py               # Version complète avec gold_models
+│   └── repository.py           # Definitions Dagster
+├── pipeline/                   # Logique métier (stage_ingest, stage_features, etc.)
+│   ├── config.py               # Configuration DuckLake
+│   ├── stage_ingest.py         # 🥉 Bronze: ingestion CSV
+│   ├── stage_features.py       # 🥈 Silver: enrichissement + négatifs
+│   ├── stage_datasets.py       # 🥇 Gold: train/test splits
+│   └── stage_modeling.py       # 🥇 Gold: entraînement modèles
+├── k8s/dagster/                # Manifests Kubernetes
+│   ├── dagster-helm-app-updated.yaml  # ArgoCD Application
+│   ├── configmap-dagster-ducklake.yaml
+│   └── DEPLOY_DAGSTER.md
+├── Dockerfile.dagster          # Image user-code (1.12GB)
+├── rebuild-and-deploy.sh       # Script rebuild/redeploy automatique
+├── accident_fetch_data.py      # Notebook Marimo legacy (exploration)
+├── predict_map.py              # Visualisation interactive (Marimo)
+├── routes.nc                   # Cache OSM (~50MB, git-ignoré)
+├── INDUSTRIALISATION.md        # Guide Dagster + K8s
 └── README.md                   # Cette documentation
+```
+
+### 🏛️ Architecture Médaillons (Lakehouse)
+
+**DuckLake = DuckDB + PostgreSQL (catalog) + S3 (storage)**
+
+```mermaid
+graph LR
+    A[CSV data.gouv.fr] -->|ingest_all| B[🥉 Bronze<br/>bronze.accidents_nc]
+    B -->|build_feature_store| C[🥈 Silver<br/>silver.features]
+    C -->|build_datasets| D[🥇 Gold<br/>gold.train/test]
+    D -->|run_training| E[🥇 Gold<br/>gold_models + MLflow]
+    
+    B -.-> F[(PostgreSQL<br/>Catalog)]
+    C -.-> F
+    D -.-> F
+    E -.-> F
+    
+    B -.-> G[(S3 RustFS<br/>Parquet)]
+    C -.-> G
+    D -.-> G
+```
+
+- **🥉 Bronze** : Données brutes (5 ans CSV, dep=988, datetime parsing)
+- **🥈 Silver** : Features enrichies (OSM buffer 200m, négatifs 22k ratio, temporelles)
+- **🥇 Gold** : Datasets ML (80/20 split, encodage atm) + Modèles (CatBoost/LGBM/XGB)
+
+### 🔄 Workflow de Développement
+
+```bash
+# 1. Modifier le code dans pipeline/ ou dagster_accidents/
+vim pipeline/stage_ingest.py
+
+# 2. Rebuild & redeploy automatique
+./rebuild-and-deploy.sh
+
+# 3. Matérialiser via UI Dagster
+# → https://dagster.tgu.ovh > Sélectionner asset > "Materialize"
 ```
 
 ---
@@ -59,6 +119,9 @@ accidents/
 
 - Python 3.13+
 - [uv](https://github.com/astral-sh/uv) (gestionnaire de paquets)
+- Docker + Kubernetes (microk8s recommandé pour local)
+- Accès à un cluster PostgreSQL (DuckLake catalog)
+- Accès à un stockage S3 compatible (DuckLake data storage)
 
 ### Installation des dépendances
 
@@ -67,8 +130,14 @@ accidents/
 git clone <repo-url>
 cd accidents
 
-# Installer les dépendances
+# Installer les dépendances (production uniquement)
 uv sync
+
+# Ou avec dépendances training (optuna, catboost, etc.)
+uv sync --extra training
+
+# Ou avec dev tools (marimo, dagster-webserver, pytest)
+uv sync --extra dev
 
 # Activer l'environnement virtuel
 source .venv/bin/activate
@@ -76,19 +145,32 @@ source .venv/bin/activate
 
 ### Dépendances principales
 
+**Core (production)** :
 ```toml
-marimo[recommended]  # Notebooks réactifs
-duckdb               # Base de données SQL
-polars, pandas       # Manipulation de données
+dagster>=1.8.0       # Orchestration
+dagster-k8s          # Run launcher Kubernetes
+dagster-postgres     # Storage backend
+duckdb>=1.3.0        # Moteur SQL + DuckLake
 geopandas, osmnx     # Analyse géospatiale
 scikit-learn         # Machine learning
-xgboost, lightgbm    # Gradient boosting
-catboost             # Gradient boosting avec catégorielles
-optuna               # Hyperparameter optimization
-imblearn             # Échantillonnage déséquilibré
-folium               # Cartes interactives
-scipy                # Calculs scientifiques
-geopy                # Distance géodésique
+polars, pandas       # Manipulation de données
+pyarrow              # DuckDB ↔ Polars
+boto3                # Client S3
+```
+
+**Training (optionnel)** :
+```toml
+catboost, lightgbm, xgboost  # Gradient boosting
+optuna                        # Hyperparameter tuning
+torch, pytorch-tabnet         # Deep learning
+imblearn                      # Resampling
+```
+
+**Dev (optionnel)** :
+```toml
+marimo[recommended]   # Notebooks réactifs (exploration)
+dagster-webserver     # UI locale
+pytest                # Tests
 ```
 
 ---
@@ -168,7 +250,7 @@ CONFIG = {
 }
 ```
 
-### 2️⃣ Visualisation Interactive
+### 🗺️ Visualisation Interactive
 
 **Notebook Marimo** : `predict_map.py`
 
@@ -197,9 +279,9 @@ marimo edit predict_map.py
 - Tableau récapitulatif par heure
 - Résumé global (heure la plus dangereuse, risques moyen/max)
 
-### 3️⃣ Prédictions Automatiques
+### 🤖 Prédictions Automatiques (À faire)
 
-**Script Python** : `predict_daily.py`
+**Script Python** : `predict_daily.py` (nécessite adaptation pour DuckLake)
 
 ```bash
 # Prédictions pour demain (conditions normales)
@@ -230,54 +312,143 @@ crontab -e
 0 23 * * * cd /path/to/accidents && python predict_daily.py >> predict.log 2>&1
 ```
 
-### 4️⃣ Consultation des Prédictions
+### 🔍 Consultation des Données DuckLake
 
-**DuckDB SQL** (voir [QUERIES.md](QUERIES.md) pour plus d'exemples) :
+**DuckDB CLI** (voir [QUERIES.md](QUERIES.md) pour plus d'exemples) :
 
 ```bash
-duckdb predictions.duckdb
+# Se connecter au catalog DuckLake (depuis un pod k8s)
+kubectl exec -it -n dagster deployment/dagster-user-deployment-accidents -- \
+  duckdb -c "ATTACH 'postgres://user:password@postgresql.datalab:5432/data' AS ducklake (TYPE postgres); SELECT * FROM ducklake.bronze.accidents_nc LIMIT 10;"
+
+# Ou depuis un notebook Marimo local
+marimo edit accident_fetch_data.py
+# Dans le notebook:
+import duckdb
+from pipeline.config import ensure_connection
+conn = ensure_connection()
+conn.execute("SELECT * FROM bronze.accidents_nc LIMIT 10").pl()
 ```
 
-```sql
--- Top 10 zones dangereuses demain
-SELECT date, hour, latitude, longitude, probability
-FROM predictions
-WHERE date = CURRENT_DATE + INTERVAL 1 DAY
-ORDER BY probability DESC LIMIT 10;
+**Requêtes utiles** :
 
--- Statistiques par heure
-SELECT hour, AVG(probability) as risque_moyen, COUNT(*) as nb_points
-FROM predictions
-WHERE date = CURRENT_DATE + INTERVAL 1 DAY
-GROUP BY hour
-ORDER BY risque_moyen DESC;
+```sql
+-- Compter les accidents par année
+SELECT EXTRACT(YEAR FROM event_time) as year, COUNT(*) as nb_accidents
+FROM bronze.accidents_nc
+GROUP BY year
+ORDER BY year;
+
+-- Top 10 features les plus importantes
+SELECT * FROM silver.features WHERE target = 1 LIMIT 10;
+
+-- Distribution train/test
+SELECT 'train' as split, COUNT(*) as rows FROM gold.train
+UNION ALL
+SELECT 'test' as split, COUNT(*) as rows FROM gold.test;
+```
+
+**Stockage S3** :
+
+```bash
+# Lister les fichiers Parquet sur RustFS
+aws --endpoint-url=https://rustfs.tgu.ovh s3 ls s3://accidents-bucket/ducklake/ --recursive
+
+# Télécharger une table localement
+aws --endpoint-url=https://rustfs.tgu.ovh s3 cp \
+  s3://accidents-bucket/ducklake/bronze/accidents_nc/ . --recursive
 ```
 
 ---
 
 ## 📐 Schéma de Données
 
-### Base DuckDB : `predictions`
+### DuckLake (PostgreSQL Catalog + S3 Parquet Storage)
+
+**Catalog PostgreSQL** : `postgresql.datalab.svc.cluster.local:5432/data`  
+**Storage S3** : `s3://accidents-bucket/ducklake/` (RustFS)
+
+#### 🥉 Schema Bronze
 
 ```sql
-CREATE TABLE predictions (
-    id INTEGER PRIMARY KEY,
-    date DATE NOT NULL,
-    hour INTEGER NOT NULL,              -- 0-23
-    latitude DOUBLE NOT NULL,           -- EPSG:4326
-    longitude DOUBLE NOT NULL,          -- EPSG:4326
-    probability DOUBLE NOT NULL,        -- 0.0-1.0
-    atm_code INTEGER NOT NULL,          -- 1=Normal, 2=Pluie légère, 3=Pluie forte, 5=Brouillard
-    dayofweek INTEGER NOT NULL,         -- 0=Lundi, 6=Dimanche
-    month INTEGER NOT NULL,             -- 1-12
-    created_at TIMESTAMP NOT NULL,
-    UNIQUE(date, hour, latitude, longitude)
+-- Table principale: accidents New Caledonia
+CREATE TABLE bronze.accidents_nc (
+    Num_Acc VARCHAR,              -- ID accident (clé)
+    event_time TIMESTAMP,         -- Datetime parsé (format français)
+    latitude DOUBLE,              -- Coordonnée WGS84
+    longitude DOUBLE,             -- Coordonnée WGS84
+    atm INTEGER,                  -- Conditions météo (1-9)
+    year INTEGER,                 -- 2019-2024
+    PRIMARY KEY (Num_Acc)
+);
+
+-- Tables sources (CSV bruts)
+CREATE TABLE bronze.caracteristiques (...);  -- Métadonnées accident
+CREATE TABLE bronze.usagers (...);           -- Victimes
+```
+
+#### 🥈 Schema Silver
+
+```sql
+CREATE TABLE silver.features (
+    -- Identifiant
+    row_id INTEGER PRIMARY KEY,
+    
+    -- Target
+    target INTEGER,               -- 0=pas accident, 1=accident
+    
+    -- Features géographiques
+    latitude DOUBLE,
+    longitude DOUBLE,
+    dist_to_noumea_km DOUBLE,
+    accident_density_5km DOUBLE,
+    
+    -- Features temporelles
+    hour INTEGER,                 -- 0-23
+    dayofweek INTEGER,            -- 0-6
+    month INTEGER,                -- 1-12
+    atm INTEGER,                  -- 1-9
+    hour_sin DOUBLE,              -- Encodage cyclique
+    hour_cos DOUBLE,
+    is_weekend BOOLEAN,
+    is_rush_hour BOOLEAN,
+    
+    -- Features OSM
+    road_type VARCHAR,
+    speed_limit INTEGER,
+    
+    -- Features d'interaction
+    lat_hour DOUBLE,
+    lon_dayofweek DOUBLE,
+    hour_dayofweek DOUBLE,
+    -- ... (18 features d'interaction total)
 );
 ```
 
-**Index** :
-- `idx_date_hour` : Requêtes par période
-- `idx_probability` : Filtrage par risque
+#### 🥇 Schema Gold
+
+```sql
+CREATE TABLE gold.train (
+    -- Mêmes colonnes que silver.features
+    -- 80% des données (split stratifié)
+);
+
+CREATE TABLE gold.test (
+    -- Mêmes colonnes que silver.features
+    -- 20% des données (split stratifié)
+);
+
+CREATE TABLE gold.feature_metadata (
+    feature_name VARCHAR PRIMARY KEY,
+    feature_order INTEGER,
+    feature_type VARCHAR          -- 'numeric', 'categorical', 'interaction'
+);
+```
+
+**Artefacts stockés en S3** :
+- `s3://accidents-bucket/ducklake/artifacts/atm_encoder.pkl`
+- `s3://accidents-bucket/ducklake/artifacts/features.pkl`
+- `s3://accidents-bucket/ducklake/artifacts/accident_model.pkl` (si training)
 
 ### Features ML
 
@@ -448,11 +619,171 @@ Réel Oui          40 ❌       272 ✅
 
 ---
 
-## 🛠️ Développement
+## � Déploiement Kubernetes
 
-### Structure Marimo
+### Configuration Initiale
 
-Les notebooks utilisent **Marimo** (réactif, pas Jupyter) :
+1. **Créer le Secret avec credentials** :
+
+```bash
+kubectl create secret generic rustfs-credentials-dagster -n dagster \
+  --from-literal=AWS_ACCESS_KEY_ID=<your-key> \
+  --from-literal=AWS_SECRET_ACCESS_KEY=<your-secret> \
+  --from-literal=POSTGRES_PASSWORD=<pg-password>
+```
+
+2. **Créer le ConfigMap** :
+
+```bash
+kubectl apply -f k8s/dagster/configmap-dagster-ducklake.yaml
+```
+
+3. **Déployer via ArgoCD** :
+
+```bash
+# Appliquer l'Application ArgoCD
+kubectl apply -f k8s/dagster/dagster-helm-app-updated.yaml
+
+# Vérifier le sync
+argocd app get dagster -n argocd
+```
+
+### Rebuild & Redeploy (Développement)
+
+**Script automatisé** : `rebuild-and-deploy.sh`
+
+```bash
+# Éditer le code
+vim pipeline/stage_ingest.py
+
+# Build + push + restart
+./rebuild-and-deploy.sh
+
+# Résultat:
+# ✅ Build Docker: ~45s
+# ✅ Push registry: ~20s  
+# ✅ Rollout restart: ~60s
+# ✅ Total: ~2min
+```
+
+**Vérification** :
+
+```bash
+# Status des pods
+kubectl get pods -n dagster | grep user-deployment
+
+# Logs en temps réel
+kubectl logs -f -n dagster deployment/dagster-user-deployment-accidents
+
+# Tester connectivité DuckLake
+kubectl exec -n dagster deployment/dagster-user-deployment-accidents -- \
+  python -c "from pipeline.config import ensure_connection; conn = ensure_connection(); print('✅ OK')"
+```
+
+### Troubleshooting
+
+**Erreur : "No module named 'X'"**
+→ Ajouter la dépendance dans `pyproject.toml` puis rebuild
+
+**Erreur : "fe_sendauth: no password supplied"**
+→ Vérifier que `POSTGRES_PASSWORD` est dans le Secret
+
+**Erreur : "Could not parse string '...' according to format"**
+→ Vérifier le parsing datetime dans `pipeline/stage_ingest.py`
+
+**Pod en CrashLoopBackOff**
+→ `kubectl logs -n dagster <pod-name>` pour voir l'erreur exacte
+
+### Documentation Complète
+
+Voir [INDUSTRIALISATION.md](INDUSTRIALISATION.md) pour :
+- Architecture détaillée Dagster + DuckLake
+- Configuration ArgoCD
+- Manifests Kubernetes
+- Stratégies de déploiement production
+
+## �🛠️ Développement
+
+### Structure du Code
+
+**Séparation des responsabilités** :
+
+```
+pipeline/           → Logique métier (réutilisable)
+├── config.py       → Configuration DuckLake
+├── stage_*.py      → Étapes du pipeline (ingest/features/datasets/modeling)
+└── utils.py        → Fonctions utilitaires
+
+dagster_accidents/  → Orchestration
+├── assets_prod.py  → Assets production (bronze/silver/gold)
+├── assets.py       → Assets complets (avec training)
+└── repository.py   → Definitions Dagster
+```
+
+**Principes** :
+- `pipeline/` = source de vérité (indépendant de Dagster)
+- `dagster_accidents/` = wrappers minces (juste `@asset` + appels)
+- Assets retournent des `dict` (métriques pour logs Dagster)
+
+### Ajout d'un Nouvel Asset
+
+1. **Créer la fonction métier** dans `pipeline/stage_<name>.py` :
+
+```python
+# pipeline/stage_predictions.py
+from .config import ensure_connection
+
+def generate_predictions():
+    conn = ensure_connection()
+    conn.execute("""
+        CREATE OR REPLACE TABLE gold.predictions AS
+        SELECT * FROM silver.features WHERE ...
+    """)
+    return {'predictions': 1500}
+```
+
+2. **Wrapper Dagster** dans `dagster_accidents/assets_prod.py` :
+
+```python
+from pipeline.stage_predictions import generate_predictions
+
+@asset(
+    name="gold_predictions",
+    key_prefix=["gold"],
+    deps=[gold_datasets],
+    group_name="gold"
+)
+def gold_predictions(context: AssetExecutionContext) -> dict:
+    stats = generate_predictions()
+    context.log.info(f"[GOLD] Predictions: {stats}")
+    return stats
+```
+
+3. **Rebuild & redeploy** :
+
+```bash
+./rebuild-and-deploy.sh
+```
+
+### Tests Locaux (sans K8s)
+
+```bash
+# Configurer DuckLake en local (fichier .env)
+cat > .env << EOF
+DUCKLAKE_DATABASE_URL=duckdb:///data/accidents_pipeline.duckdb
+DUCKLAKE_DATA_PATH=./data/ducklake
+EOF
+
+# Tester une fonction pipeline directement
+python -c "from pipeline.stage_ingest import ingest_all; print(ingest_all())"
+
+# Ou lancer Dagster en local
+uv run dagster dev -m dagster_accidents.repository -p 3000
+```
+
+### Structure Marimo (Notebooks Exploration)
+
+Les notebooks Marimo utilisent une syntaxe réactive :
 
 ```python
 @app.cell
@@ -463,28 +794,25 @@ def _(dependencies):
 
 **Règles** :
 - Variables uniques dans tout le notebook
-- Dernière expression = output affiché (pas de `return` explicite pour affichage)
+- Dernière expression = output affiché
 - `mo.ui.*` pour éléments interactifs
 
-### Ajout de Features
-
-1. **Modifier cellule features** dans `accident_fetch_data.py`
-2. **Ré-exécuter entraînement** (sélection automatique meilleur modèle)
-3. **Mettre à jour** `predict_daily.py` avec nouvelles colonnes
-
-### Tests
-
-```bash
-# Test prédictions pour une date passée
-python predict_daily.py --date 2025-12-25 --atm 1
-
-# Vérifier dans DuckDB
-duckdb predictions.duckdb "SELECT COUNT(*) FROM predictions WHERE date='2025-12-25'"
-```
+**Usage recommandé** : Exploration uniquement, pas pour la production.
 
 ---
 
 ## 📝 Améliorations Futures
+
+### Infrastructure & DevOps
+
+- [x] Dagster sur Kubernetes ✅
+- [x] Architecture médaillons (Bronze/Silver/Gold) ✅
+- [x] DuckLake (PostgreSQL catalog + S3 storage) ✅
+- [x] Script rebuild-and-deploy automatique ✅
+- [ ] CI/CD avec GitLab CI / GitHub Actions
+- [ ] Tests unitaires pipeline (pytest)
+- [ ] Monitoring Prometheus + Grafana
+- [ ] Alerting sur échecs de matérialisation
 
 ### Features Géospatiales Avancées
 
@@ -514,12 +842,15 @@ duckdb predictions.duckdb "SELECT COUNT(*) FROM predictions WHERE date='2025-12-
 - [ ] TabNet (deep learning pour tabular)
 - [ ] Modèles géospatiaux (GWR, spatial lag)
 - [ ] AutoML (AutoGluon, H2O)
+- [ ] MLflow pour versioning et registry des modèles
 
-### Déploiement
+### Applications
 
-- [ ] API REST (FastAPI)
-- [ ] Dashboard temps réel (Streamlit)
-- [ ] Notifications SMS zones critiques
+- [ ] API REST (FastAPI) avec prédictions temps réel
+- [ ] Dashboard Streamlit avec cartes interactives
+- [ ] Notifications automatiques zones critiques
+- [ ] Intégration avec systèmes de signalisation dynamique
+- [ ] Scheduler Dagster pour prédictions quotidiennes automatiques
 
 ---
 
@@ -533,8 +864,9 @@ Ce projet utilise des données publiques sous licence Open Data (data.gouv.fr) e
 
 - **data.gouv.fr** : Données officielles accidents
 - **OpenStreetMap** : Réseau routier
-- **Marimo** : Framework notebooks réactifs
-- **LightGBM** : Algorithme ML performant
+- **Dagster** : Orchestration moderne des pipelines data
+- **DuckDB** : Moteur SQL performant avec support DuckLake
+- **Marimo** : Framework notebooks réactifs pour exploration
 
 ---
 
@@ -542,4 +874,4 @@ Ce projet utilise des données publiques sous licence Open Data (data.gouv.fr) e
 
 Pour questions, suggestions ou contributions, ouvrez une issue sur le dépôt GitHub.
 
-**Dernière mise à jour** : Janvier 2026
+**Dernière mise à jour** : Février 2026 - Version Dagster/Kubernetes industrialisée

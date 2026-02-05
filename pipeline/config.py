@@ -63,7 +63,13 @@ def ensure_connection() -> duckdb.DuckDBPyConnection:
             "postgres:dbname=ducklake_catalog host=postgresql.datalab.svc.cluster.local"
         )
 
+    # Ajouter le mot de passe PostgreSQL si disponible
     if ducklake_catalog.startswith("postgres:"):
+        postgres_password = os.getenv("POSTGRES_PASSWORD")
+        if postgres_password and "password=" not in ducklake_catalog:
+            # Insérer le mot de passe dans la chaîne de connexion
+            ducklake_catalog = ducklake_catalog.replace("user=", f"password={postgres_password} user=")
+        
         conn.execute("INSTALL postgres;")
         conn.execute("LOAD postgres;")
 

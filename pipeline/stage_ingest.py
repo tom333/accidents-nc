@@ -70,7 +70,8 @@ def ingest_all() -> dict[str, int]:
         WITH base AS (
             SELECT
                 c.Num_Acc,
-                strptime(
+                -- Construire la chaîne datetime en nettoyant hrmn (enlever :: pour ::)
+                regexp_replace(
                     concat(
                         lpad(cast(c.jour AS VARCHAR), 2, '0'), '/',
                         lpad(cast(c.mois AS VARCHAR), 2, '0'), '/',
@@ -78,8 +79,8 @@ def ingest_all() -> dict[str, int]:
                         substr(lpad(cast(c.hrmn AS VARCHAR), 4, '0'), 1, 2), ':',
                         substr(lpad(cast(c.hrmn AS VARCHAR), 4, '0'), 3, 2), ':00'
                     ),
-                    '%d/%m/%Y %H:%M:%S'
-                ) AS event_time,
+                    '::', ':'  -- Remplacer :: par : pour corriger les erreurs de saisie
+                ) AS datetime_str,
                 cast(replace(trim(c.lat), ',', '.') AS DOUBLE) AS latitude,
                 cast(replace(trim(c.long), ',', '.') AS DOUBLE) AS longitude,
                 c.atm,
@@ -87,6 +88,15 @@ def ingest_all() -> dict[str, int]:
             FROM {BRONZE_SCHEMA}.caracteristiques c
             LEFT JOIN {BRONZE_SCHEMA}.usagers u ON c.Num_Acc = u.Num_Acc
             WHERE c.dep = '988'
+        ),
+        parsed AS (
+            SELECT
+                Num_Acc,
+                strptime(datetime_str, '%d/%m/%Y %H:%M:%S') AS event_time,
+                latitude,
+                longitude,
+                atm
+            FROM base
         )
         SELECT
             Num_Acc,
@@ -98,7 +108,7 @@ def ingest_all() -> dict[str, int]:
             dayofweek(event_time) AS dayofweek,
             month(event_time) AS month,
             1 AS target
-        FROM base
+        FROM parsed
         WHERE latitude IS NOT NULL AND longitude IS NOT NULL
         """
     )

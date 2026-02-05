@@ -256,8 +256,21 @@ def build_feature_store() -> dict[str, int]:
     routes_grid = _build_grid(routes)
     negative_samples = _generate_negative_samples(accidents, routes_grid)
 
+    # Préparer accidents avec les mêmes colonnes que negative_samples
+    accidents_prepared = accidents.select([
+        pl.col('datetime'),
+        pl.col('latitude'),
+        pl.col('longitude'),
+        pl.col('atm'),
+    ]).with_columns([
+        pl.col('datetime').dt.hour().alias('hour'),
+        pl.col('datetime').dt.weekday().alias('dayofweek'),
+        pl.col('datetime').dt.month().alias('month'),
+        pl.lit(1).alias('target')  # target = 1 pour accidents réels
+    ])
+
     conn = ensure_connection()
-    conn.register('accidents_tbl', accidents.to_pandas())
+    conn.register('accidents_tbl', accidents_prepared.to_pandas())
     conn.register('negatives_tbl', negative_samples.to_pandas())
     combined = conn.execute(
         """

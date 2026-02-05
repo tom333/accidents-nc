@@ -1,42 +1,73 @@
 # syntax=docker/dockerfile:1.4
 
-# Image Dagster user-deployment avec dépendances ML/geo
-FROM python:3.13-slim
+# ============================================
+# Stage 1: Builder - compile dependencies
+# ============================================
+FROM python:3.13-slim AS builder
 
-# Install system dependencies for geospatial libraries + DuckDB
+# Install build dependencies (only needed for compilation)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gdal-bin \
+    gcc \
+    g++ \
     libgdal-dev \
     libgeos-dev \
     libproj-dev \
     libspatialindex-dev \
-    gcc \
-    g++ \
     curl \
-    git \
     && rm -rf /var/lib/apt/lists/*
 
-# Install uv for fast package management
+# Install uv
 COPY --from=ghcr.io/astral-sh/uv:0.4.20 /uv /bin/uv
 ENV UV_SYSTEM_PYTHON=1
 
-WORKDIR /opt/dagster/app
+WORKDIR /build
 
-# Copy dependency files
+# Copy only dependency files for better caching
 COPY --link pyproject.toml .
 
-# Install Python dependencies using uv (including Dagster)
-RUN uv pip install -e .
+# Install project dependencies (core only, excludes training/dev/streamlit)
+# By default pip/uv install without specifying extras will only install core dependencies
+RUN uv pip install --no-cache-dir --compile-bytecode . && \
+    # Remove only __pycache__ directories (keep .dist-info for package metadata)
+    find /usr/local/lib/python3.13/site-packages -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
+
+# ============================================
+# Stage 2: Runtime - minimal production image
+# ============================================
+FROM python:3.13-slim
+
+# Install only runtime dependencies (no build tools)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgdal36 \
+    libgeos-c1t64 \
+    libproj25 \
+    libspatialindex8 \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+WORKDIR /opt/dagster/app
+
+# Copy installed packages from builder
+COPY --from=builder /usr/local/lib/python3.13/site-packages /usr/local/lib/python3.13/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
 
 # Copy application code
 COPY --link pipeline/ ./pipeline/
 COPY --link dagster_accidents/ ./dagster_accidents/
 
-# Set PYTHONPATH to ensure imports work
-ENV PYTHONPATH=/opt/dagster/app
+# Create non-root user and dagster home directory
+RUN useradd -m -u 1000 dagster && \
+    mkdir -p /opt/dagster/dagster_home && \
+    chown -R dagster:dagster /opt/dagster
+
+USER dagster
+
+# Set PYTHONPATH
+ENV PYTHONPATH=/opt/dagster/app \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
 
 # Expose port for Dagster gRPC server
 EXPOSE 4000
 
 # Command will be provided by Dagster Helm chart
-# (usually runs `dagster api grpc --python-file ...` or similar)

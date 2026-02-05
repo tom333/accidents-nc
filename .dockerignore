@@ -4,10 +4,69 @@ __pycache__/
 *$py.class
 *.so
 .Python
+*.pyc
+*.pyo
+*.pyd
 
 # Environnements virtuels
 venv/
 env/
+.venv/
+
+# Cache uv/pip
+.uv/
+pip-cache/
+
+# Données et caches
+data/
+*.csv
+*.nc
+routes.nc
+catboost_info/
+models/
+*.pkl
+*.joblib
+mlruns/
+
+# Notebooks et tests
+*.ipynb
+notebooks/
+tests/
+__pycache__/
+.pytest_cache/
+
+# Git et IDE
+.git/
+.gitignore
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Documentation
+README.md
+*.md
+DOCKER.md
+INDUSTRIALISATION.md
+QUERIES.md
+PHASE1_COMPLETED.md
+TODO.md
+
+# K8s et déploiement
+k8s/
+docker-compose.yml
+Dockerfile*
+.dockerignore
+
+# Scripts non nécessaires en production
+*.sh
+automl_benchmark.py
+predict_daily.py
+predict_map.py
+precompute_density.py
+orchestrator.py
+accident_fetch_data.py
+main.py
 ENV/
 .venv
 

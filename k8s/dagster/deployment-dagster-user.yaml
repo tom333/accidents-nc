@@ -78,6 +78,12 @@ spec:
             secretKeyRef:
               name: rustfs-credentials-dagster
               key: secret_key
+        # Password PostgreSQL pour dbt
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: postgresql-password
+              key: password
         resources:
           requests:
             memory: "2Gi"

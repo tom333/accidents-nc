@@ -24,19 +24,18 @@ spec:
       - name: user-code
         image: localhost:32000/accidents-dagster:latest
         imagePullPolicy: Always
-        # Command définie dans le Dockerfile (entrypoint.sh parse dbt puis lance dagster)
-        # command:
-        #   - dagster
-        #   - api
-        #   - grpc
-        #   - --module-name
-        #   - dagster_accidents.repository
-        #   - --attribute
-        #   - defs
-        #   - --port
-        #   - "4000"
-        #   - --host
-        #   - "0.0.0.0"
+        command:
+          - dagster
+          - api
+          - grpc
+          - --module-name
+          - dagster_accidents.repository
+          - --attribute
+          - defs
+          - --port
+          - "4000"
+          - --host
+          - "0.0.0.0"
         ports:
         - containerPort: 4000
           name: grpc

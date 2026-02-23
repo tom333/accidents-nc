@@ -1,0 +1,130 @@
+name: Build Docker Images
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+env:
+  REGISTRY: localhost:32000
+  DAGSTER_IMAGE: accidents-dagster
+  STREAMLIT_IMAGE: accidents-streamlit
+
+jobs:
+  build-dagster:
+    name: Build Dagster Image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.DAGSTER_IMAGE }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+      
+      - name: Build Dagster image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.dagster
+          push: false  # Pas de push vers registry externe
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            CACHEBUST=${{ github.sha }}
+      
+      - name: Scan image for vulnerabilities
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.DAGSTER_IMAGE }}:latest
+          format: 'sarif'
+          output: 'trivy-dagster.sarif'
+        continue-on-error: true
+      
+      - name: Upload Trivy results
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: 'trivy-dagster.sarif'
+        if: always()
+
+  build-streamlit:
+    name: Build Streamlit Image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.STREAMLIT_IMAGE }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+      
+      - name: Build Streamlit image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.streamlit
+          push: false
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      
+      - name: Scan image for vulnerabilities
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.STREAMLIT_IMAGE }}:latest
+          format: 'sarif'
+          output: 'trivy-streamlit.sarif'
+        continue-on-error: true
+      
+      - name: Upload Trivy results
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: 'trivy-streamlit.sarif'
+        if: always()
+
+  summary:
+    name: Build Summary
+    runs-on: ubuntu-latest
+    needs: [build-dagster, build-streamlit]
+    if: always()
+    steps:
+      - name: Check build results
+        run: |
+          if [ "${{ needs.build-dagster.result }}" != "success" ]; then
+            echo "❌ Dagster build failed"
+            exit 1
+          fi
+          if [ "${{ needs.build-streamlit.result }}" != "success" ]; then
+            echo "❌ Streamlit build failed"
+            exit 1
+          fi
+          echo "✅ All images built successfully!"
+          echo "📦 Images:"
+          echo "  - ${{ env.REGISTRY }}/${{ env.DAGSTER_IMAGE }}:${{ github.sha }}"
+          echo "  - ${{ env.REGISTRY }}/${{ env.STREAMLIT_IMAGE }}:${{ github.sha }}"

@@ -29,7 +29,7 @@ spec:
           - api
           - grpc
           - --module-name
-          - dagster_accidents.repository
+          - dagster_pipeline.definitions
           - --attribute
           - defs
           - --port

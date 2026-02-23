@@ -8,6 +8,7 @@ import duckdb
 
 
 DUCKLAKE_DB_ALIAS = os.getenv("DUCKLAKE_DB_ALIAS", "accidents_ducklake")
+MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "https://mlflow.tgu.ovh")
 
 # Architecture médaillons (Medallion Architecture)
 BRONZE_SCHEMA = "bronze"  # Données brutes ingérées (accidents_nc)
@@ -17,7 +18,7 @@ GOLD_SCHEMA = "gold"      # Données agrégées et datasets ML (train/test/model
 
 @dataclass(frozen=True)
 class PipelineParams:
-    n_negative_samples_ratio: int = 22000
+    max_negative_samples_multiplier: int = 100  # Multiplie le nombre de points de grille pour générer les négatifs
     buffer_meters: int = 200
     grid_step: float = 0.02
     test_size: float = 0.2

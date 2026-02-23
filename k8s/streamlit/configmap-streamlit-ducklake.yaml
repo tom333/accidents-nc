@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: streamlit-ducklake-config
+  namespace: accidents
+data:
+  DUCKLAKE_DATABASE_URL: "postgresql://data:@postgresql.datalab.svc.cluster.local:5432/data"
+  DUCKLAKE_DATA_PATH: "s3://accidents-bucket"
+  DUCKLAKE_DB_ALIAS: "accidents"
+  AWS_ENDPOINT_URL: "https://rustfs.tgu.ovh"
+  AWS_REGION: "us-east-1"

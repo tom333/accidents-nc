@@ -4,20 +4,39 @@ __pycache__/
 build/
 dist/
 wheels/
-*.egg-info
+*.egg-info/
 __marimo__/
 
 # Virtual environments
-.venv
+.venv/
+venv/
 
-catboost_info
-*.pkl
+# Configuration
+.env
+.env.local
 
-# Données CSV (téléchargées via download_data.sh)
+# Data & Models
 data/
 *.csv
+*.duckdb
+*.pkl
+*.db
+mlflow.db
+mlruns/
 
-# Modèles AutoML
+# Training artifacts
+catboost_info/
+wandb/
+checkpoints/
+
+# Temporary files
+.tmp*
+*.log
+.DS_Store
+.pytest_cache/
+
+# Archives
+archive/
 autogluon_models/
 
 # Base de données
@@ -26,3 +45,11 @@ autogluon_models/
 
 .tmp*
 .pytest_cache/
+
+mlflow.db
+mlruns
+.env
+
+REFONTE_PROGRESS.md
+PHASE*.md
+dagster_home

@@ -1,50 +1,88 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: accidents-app
+  name: streamlit-app
   namespace: accidents
   labels:
-    app: accidents
+    app: streamlit
+    component: frontend
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: accidents
+      app: streamlit
+      component: frontend
   template:
     metadata:
       labels:
-        app: accidents
+        app: streamlit
+        component: frontend
     spec:
       containers:
-      - name: accidents
-        image: localhost:32000/accidents-app:latest
+      - name: streamlit
+        image: localhost:32000/accidents-streamlit:latest
         imagePullPolicy: Always
         ports:
-        - containerPort: 8080
+        - containerPort: 8501
           name: http
           protocol: TCP
         env:
-        - name: MARIMO_LOG_LEVEL
-          value: "INFO"
+        # Variables DuckLake
+        - name: DUCKLAKE_DATABASE_URL
+          valueFrom:
+            configMapKeyRef:
+              name: streamlit-ducklake-config
+              key: DUCKLAKE_DATABASE_URL
+        - name: DUCKLAKE_DATA_PATH
+          valueFrom:
+            configMapKeyRef:
+              name: streamlit-ducklake-config
+              key: DUCKLAKE_DATA_PATH
+        - name: DUCKLAKE_DB_ALIAS
+          valueFrom:
+            configMapKeyRef:
+              name: streamlit-ducklake-config
+              key: DUCKLAKE_DB_ALIAS
+        - name: AWS_ENDPOINT_URL
+          valueFrom:
+            configMapKeyRef:
+              name: streamlit-ducklake-config
+              key: AWS_ENDPOINT_URL
+        - name: AWS_REGION
+          valueFrom:
+            configMapKeyRef:
+              name: streamlit-ducklake-config
+              key: AWS_REGION
+        # Credentials RustFS
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: rustfs-credentials-streamlit
+              key: access_key
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: rustfs-credentials-streamlit
+              key: secret_key
         resources:
           requests:
-            memory: "2Gi"
-            cpu: "500m"
+            memory: "512Mi"
+            cpu: "250m"
           limits:
-            memory: "4Gi"
-            cpu: "2000m"
+            memory: "2Gi"
+            cpu: "1000m"
         livenessProbe:
           httpGet:
-            path: /health
-            port: 8080
+            path: /_stcore/health
+            port: 8501
           initialDelaySeconds: 30
           periodSeconds: 30
           timeoutSeconds: 5
           failureThreshold: 3
         readinessProbe:
           httpGet:
-            path: /health
-            port: 8080
+            path: /_stcore/health
+            port: 8501
           initialDelaySeconds: 15
           periodSeconds: 10
           timeoutSeconds: 3

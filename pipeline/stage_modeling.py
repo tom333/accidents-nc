@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import copy
 import io
+import os
 from pathlib import Path
 from typing import Dict, Tuple
 
+import boto3
 import joblib
 import mlflow
 import numpy as np
@@ -25,6 +27,34 @@ from xgboost import XGBClassifier
 
 from .config import GOLD_SCHEMA, PIPELINE_PARAMS, ensure_connection
 from .stage_datasets import FEATURE_COLUMNS
+
+# Configuration S3
+S3_BUCKET = "accidents-bucket"
+S3_CACHE_PREFIX = "cache/"
+S3_ENDPOINT = os.getenv("AWS_ENDPOINT_URL", "https://rustfs.tgu.ovh")
+
+
+def _get_s3_client():
+    """Créer un client S3 configuré pour RustFS"""
+    return boto3.client(
+        's3',
+        endpoint_url=S3_ENDPOINT,
+        aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+        aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+        region_name=os.getenv("AWS_REGION", "us-east-1")
+    )
+
+
+def _upload_to_s3(local_path: Path, s3_key: str) -> bool:
+    """Uploader un fichier local vers S3"""
+    try:
+        s3_client = _get_s3_client()
+        s3_client.upload_file(str(local_path), S3_BUCKET, s3_key)
+        print(f"📤 Uploadé vers S3: {local_path} → s3://{S3_BUCKET}/{s3_key}")
+        return True
+    except Exception as e:
+        print(f"⚠️  Erreur upload S3: {e}")
+        return False
 
 
 def _prepare_data() -> Tuple[pd.DataFrame, pd.DataFrame, pd.Series, pd.Series]:
@@ -481,6 +511,10 @@ def run_training() -> dict:
 
     joblib.dump(best_model, 'accident_model.pkl')
     joblib.dump({'name': best_model_name}, 'best_model_info.pkl')
+    
+    # Uploader vers S3
+    _upload_to_s3(Path('accident_model.pkl'), f"{S3_CACHE_PREFIX}accident_model.pkl")
+    _upload_to_s3(Path('best_model_info.pkl'), f"{S3_CACHE_PREFIX}best_model_info.pkl")
 
     return {
         'best_model': best_model_name,

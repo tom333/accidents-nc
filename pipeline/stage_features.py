@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 from typing import Dict, Tuple
 
+import boto3
+from botocore.exceptions import ClientError
 import geopandas as gpd
 import joblib
 import numpy as np
@@ -17,6 +19,52 @@ from .config import SILVER_SCHEMA, PIPELINE_PARAMS, BRONZE_SCHEMA, ensure_connec
 
 ROUTES_CACHE = Path("routes_with_features.pkl")
 ROUTES_GEOJSON = Path("routes.nc")
+
+# Configuration S3
+S3_BUCKET = "accidents-bucket"
+S3_CACHE_PREFIX = "cache/"
+S3_ENDPOINT = os.getenv("AWS_ENDPOINT_URL", "https://rustfs.tgu.ovh")
+
+
+def _get_s3_client():
+    """Créer un client S3 configuré pour RustFS"""
+    return boto3.client(
+        's3',
+        endpoint_url=S3_ENDPOINT,
+        aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+        aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+        region_name=os.getenv("AWS_REGION", "us-east-1")
+    )
+
+
+def _download_from_s3(s3_key: str, local_path: Path) -> bool:
+    """Télécharger un fichier depuis S3 vers le système local"""
+    try:
+        s3_client = _get_s3_client()
+        s3_client.download_file(S3_BUCKET, s3_key, str(local_path))
+        print(f"📥 Téléchargé depuis S3: s3://{S3_BUCKET}/{s3_key} → {local_path}")
+        return True
+    except ClientError as e:
+        if e.response['Error']['Code'] == '404':
+            print(f"⚠️  Fichier absent sur S3: s3://{S3_BUCKET}/{s3_key}")
+        else:
+            print(f"⚠️  Erreur S3: {e}")
+        return False
+    except Exception as e:
+        print(f"⚠️  Erreur téléchargement S3: {e}")
+        return False
+
+
+def _upload_to_s3(local_path: Path, s3_key: str) -> bool:
+    """Uploader un fichier local vers S3"""
+    try:
+        s3_client = _get_s3_client()
+        s3_client.upload_file(str(local_path), S3_BUCKET, s3_key)
+        print(f"📤 Uploadé vers S3: {local_path} → s3://{S3_BUCKET}/{s3_key}")
+        return True
+    except Exception as e:
+        print(f"⚠️  Erreur upload S3: {e}")
+        return False
 
 
 def _load_accidents() -> pl.DataFrame:
@@ -34,6 +82,11 @@ def _load_accidents() -> pl.DataFrame:
 
 
 def _load_routes_grid(areas: Tuple[str, ...]) -> gpd.GeoDataFrame:
+    # Essayer de télécharger routes_with_features.pkl depuis S3
+    s3_cache_key = f"{S3_CACHE_PREFIX}{ROUTES_CACHE.name}"
+    if not ROUTES_CACHE.exists():
+        _download_from_s3(s3_cache_key, ROUTES_CACHE)
+    
     if ROUTES_CACHE.exists():
         print("📦 Chargement routes_with_features.pkl")
         routes_data = joblib.load(ROUTES_CACHE)
@@ -52,11 +105,20 @@ def _load_routes_grid(areas: Tuple[str, ...]) -> gpd.GeoDataFrame:
             crs="EPSG:4326"
         )
 
-    print("⚠️  routes_with_features.pkl absent → génération depuis OSM")
-    buffer_file = ROUTES_GEOJSON
-    if buffer_file.exists():
-        return gpd.read_file(buffer_file)
+    print("⚠️  routes_with_features.pkl absent → vérification routes.nc")
+    
+    # Essayer de télécharger routes.nc depuis S3
+    s3_geojson_key = f"{S3_CACHE_PREFIX}{ROUTES_GEOJSON.name}"
+    if not ROUTES_GEOJSON.exists():
+        _download_from_s3(s3_geojson_key, ROUTES_GEOJSON)
+    
+    if ROUTES_GEOJSON.exists():
+        routes = gpd.read_file(ROUTES_GEOJSON)
+        # Uploader sur S3 si ce n'était que local
+        _upload_to_s3(ROUTES_GEOJSON, s3_geojson_key)
+        return routes
 
+    print("⚠️  routes.nc absent → génération depuis OSM")
     all_edges = []
     for place in areas:
         try:
@@ -72,8 +134,12 @@ def _load_routes_grid(areas: Tuple[str, ...]) -> gpd.GeoDataFrame:
 
     routes = gpd.GeoDataFrame(pd.concat(all_edges, ignore_index=True), crs=all_edges[0].crs)
     routes = routes.drop_duplicates(subset="geometry")
-    routes.to_file(buffer_file, driver="GeoJSON")
-    print(f"✅ Routes enregistrées dans {buffer_file}")
+    routes.to_file(ROUTES_GEOJSON, driver="GeoJSON")
+    print(f"✅ Routes enregistrées dans {ROUTES_GEOJSON}")
+    
+    # Uploader sur S3
+    _upload_to_s3(ROUTES_GEOJSON, s3_geojson_key)
+    
     return routes
 
 
@@ -136,7 +202,8 @@ def _build_grid(routes: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
 
 def _generate_negative_samples(accidents: pl.DataFrame, routes_grid: gpd.GeoDataFrame) -> pl.DataFrame:
     params = PIPELINE_PARAMS
-    n_samples = len(accidents) * params.n_negative_samples_ratio
+    # Limite: multiplier le nombre de points de grille disponibles
+    n_samples = len(routes_grid) * params.max_negative_samples_multiplier
     if len(routes_grid) == 0:
         sampled = pl.DataFrame({
             'datetime': pl.Series(np.random.choice(accidents['datetime'], size=n_samples)).to_pandas(),
@@ -168,9 +235,10 @@ def _generate_negative_samples(accidents: pl.DataFrame, routes_grid: gpd.GeoData
         if len(safe_routes) == 0:
             safe_routes = routes_grid
 
+        # Échantillonner avec le multiplicateur défini dans les paramètres
         route_sample_indices = np.random.choice(
             len(safe_routes),
-            size=min(n_samples, len(safe_routes) * 10),
+            size=min(n_samples, len(safe_routes) * params.max_negative_samples_multiplier),
             replace=True
         )
         route_sample = safe_routes.iloc[route_sample_indices]

@@ -1,4 +1,5 @@
 """Model training for gold layer."""
+# https://github.com/tom333/accidents-nc/blob/43aa0e483d557bf0094247f83c4ddd5726b57af8/notebooks/04_model_training.py
 from __future__ import annotations
 
 import copy
@@ -464,7 +465,7 @@ def run_training() -> dict[str, Any]:
         )
         if params_dict:
             mlflow.log_params({f"{name}.{k}": v for k, v in params_dict.items()})
-        mlflow.log_metrics({f"{name}.{k}": v for k, v in metrics.items()})
+        mlflow.log_metrics({f"{name}.{k}": v for k, v in metrics.items() if v is not None})
         return metrics
 
     best_catboost = CatBoostClassifier(

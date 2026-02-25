@@ -26,7 +26,7 @@ FEATURE_COLUMNS = [
     'atm',
     'is_weekend', 'is_rush_morning', 'is_rush_evening', 'is_night',
     'hour_sin', 'hour_cos', 'dayofweek_sin', 'dayofweek_cos',
-    'road_type', 'speed_limit',
+    # 'road_type', 'speed_limit',
     'is_holiday', 'school_holidays'
 ]
 

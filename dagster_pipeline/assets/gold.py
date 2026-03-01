@@ -3,7 +3,6 @@
 from dagster import asset, Output, AssetExecutionContext
 
 from src.accidents.gold.datasets import build_datasets
-from src.accidents.gold.training import train_models
 
 
 @asset(
@@ -51,41 +50,8 @@ def ml_datasets(context: AssetExecutionContext) -> Output[dict]:
             "features_count": result["total_features"],
             "split_ratio": "80/20",
             "tables": "gold.train, gold.test, gold.feature_metadata",
-            "s3_artifacts": "atm_encoder.pkl, features.pkl",
-        },
-    )
-
-
-@asset(
-    group_name="gold",
-    description="Entrainement du modele ML (CatBoost) -> accident_model.pkl",
-    compute_kind="catboost",
-    deps=["ml_datasets"],
-)
-def ml_models(context: AssetExecutionContext) -> Output[dict]:
-    """Entraine un modele CatBoost et stocke l'artefact sur S3."""
-    context.log.info("🔄 Entrainement modele ML...")
-    result = train_models()
-    best_metrics = result.get("best_metrics", {})
-    if best_metrics:
-        context.log.info(
-            "✅ Modele entraine: "
-            f"auc={best_metrics.get('auc', 0.0):.4f}, "
-            f"recall={best_metrics.get('recall', 0.0):.4f}, "
-            f"precision={best_metrics.get('precision', 0.0):.4f}, "
-            f"f1={best_metrics.get('f1', 0.0):.4f}"
-        )
-
-    return Output(
-        result,
-        metadata={
-            "train_rows": result["train_rows"],
-            "test_rows": result["test_rows"],
-            "best_model": result.get("best_model", ""),
-            "auc": f"{best_metrics.get('auc', 0.0):.4f}",
-            "recall": f"{best_metrics.get('recall', 0.0):.4f}",
-            "precision": f"{best_metrics.get('precision', 0.0):.4f}",
-            "f1": f"{best_metrics.get('f1', 0.0):.4f}",
-            "s3_artifact": "accident_model.pkl",
+            "s3_artifacts": "atm_encoder.pkl, features.pkl, kmeans_geo.pkl",
+            "n_geo_clusters": result["n_geo_clusters"],
+            "geo_cluster_coverage": result["geo_cluster_coverage"],
         },
     )

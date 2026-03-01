@@ -22,7 +22,19 @@ Ce projet implémente un **classificateur binaire géospatial-temporel** pour pr
 
 ### 🎯 Performances du Modèle
 
-**Meilleur modèle** : CatBoost (optimisé avec Optuna - 50 trials)
+**Approche** : **Ensemble Blending** (3 modèles combinés avec pondération optimale)
+
+**Modèles de base** :
+- **CatBoost** (poids: 0.4) - Optimisé avec Optuna (50 trials)
+- **XGBoost** (poids: 0.4) - Gradient boosting classique
+- **MLP** (poids: 0.2) - Réseau de neurones avec embeddings catégoriels
+
+**Formule blending** :
+```python
+P_final = (0.4 × P_catboost + 0.4 × P_xgboost + 0.2 × P_mlp) / 1.0
+```
+
+**Performances de l'ensemble** :
 
 | Métrique | Accident | Pas Accident | Global |
 |----------|----------|--------------|--------|
@@ -32,6 +44,8 @@ Ce projet implémente un **classificateur binaire géospatial-temporel** pour pr
 | **Accuracy** | - | - | **98.2%** |
 
 **Résultat clé** : Détecte **272/312 accidents réels** (87%), avec seulement 40 faux négatifs et 6 faux positifs.
+
+**Avantage blending** : Combine les forces de chaque modèle pour une prédiction plus robuste et stable.
 
 ---
 
@@ -81,13 +95,14 @@ Ce projet implémente un **classificateur binaire géospatial-temporel** pour pr
 - **ArgoCD** : GitOps (CI/CD automatique)
 - **Streamlit** : Interface utilisateur prédictions
 - **OSMnx** : Téléchargement réseau routier
-- **CatBoost** : Modèle gradient boosting optimisé
+- **CatBoost / XGBoost / MLP** : Ensemble blending (3 modèles optimisés)
+- **Optuna** : Hyperparameter tuning automatique
 
 ### Architecture Médaillons
 
 ```
-CSV data.gouv.fr → 🥉 Bronze → 🥈 Silver → 🥇 Gold → Modèles
-                    (raw)     (features)  (datasets)  (CatBoost)
+CSV data.gouv.fr → 🥉 Bronze → 🥈 Silver → 🥇 Gold → Modèles ML → Blending
+                    (raw)     (features)  (datasets)  (CB/XGB/MLP)  (Ensemble)
 ```
 
 **Détails** : Voir [docs/architecture.md](docs/architecture.md)
@@ -107,7 +122,8 @@ accidents/
 │       │   └── negatives.py
 │       ├── gold/               # Datasets ML + Training
 │       │   ├── datasets.py
-│       │   └── training.py
+│       │   ├── training.py         # Training principal (legacy)
+│       │   └── schema.py
 │       ├── utils/              # Utilitaires
 │       │   ├── spatial.py
 │       │   ├── temporal.py
@@ -119,7 +135,12 @@ accidents/
 │   ├── assets/
 │   │   ├── bronze.py           # Assets bronze (wrappers)
 │   │   ├── silver.py           # Assets silver
-│   │   └── gold.py             # Assets gold
+│   │   ├── gold.py             # Assets gold (datasets)
+│   │   ├── catboost.py         # Modèle CatBoost (Optuna)
+│   │   ├── xgboost.py          # Modèle XGBoost (Optuna)
+│   │   ├── mlp.py              # Modèle MLP (PyTorch)
+│   │   ├── blending.py         # Ensemble blending
+│   │   └── blending_utils.py   # Utilitaires blending
 │   ├── definitions.py          # Définitions Dagster
 │   ├── schedules.py            # Jobs schedulés
 │   └── resources/
@@ -298,8 +319,11 @@ Push main → CI Tests → CI Build → CD Update Manifests → ArgoCD Deploy
 2. **Matérialiser les assets** :
    - Sélectionner `bronze_accidents_nc` → Cliquer "Materialize"
    - Sélectionner `silver_features` → Cliquer "Materialize"
-   - Sélectionner `gold_train_test` → Cliquer "Materialize"
-   - Sélectionner `gold_models` → Cliquer "Materialize"
+   - Sélectionner `ml_datasets` → Cliquer "Materialize"
+   - Sélectionner `tune_catboost` → Cliquer "Materialize"
+   - Sélectionner `tune_xgboost` → Cliquer "Materialize" (optionnel)
+   - Sélectionner `tune_mlp` → Cliquer "Materialize" (optionnel)
+   - Sélectionner `blend_model` → Cliquer "Materialize" (pour l'ensemble complet)
 
 3. **Vérifier les données dans DuckLake** :
    ```python
@@ -328,6 +352,7 @@ streamlit run app.py
 - 🎯 Mode Top N ou Seuil probabilité
 - 🗺️ Carte Folium interactive avec marqueurs de risque
 - 📊 Tableau récapitulatif par heure
+- 🔮 Prédictions par ensemble blending (CatBoost/XGBoost/MLP)
 
 ---
 
@@ -464,10 +489,26 @@ Namespace: ia-lab
 - **Échantillons négatifs** : ~2200 (ratio 2.2:1)
 - **Features** : 24 (base + enrichies)
 
-### Modèle
+### Modèles
 
-- **Algorithme** : CatBoost (gradient boosting)
-- **Optimisation** : Optuna (50 trials, 74s entraînement)
+**Architecture ensemble** : Blending de 3 modèles (poids: 0.4, 0.4, 0.2)
+
+1. **CatBoost** (gradient boosting)
+   - Optimisation : Optuna (50 trials)
+   - Gestion native des catégorielles
+   - Meilleur AUC individuel
+
+2. **XGBoost** (gradient boosting)
+   - Régularisation L1/L2
+   - Très rapide en inférence
+   - Complémentaire à CatBoost
+
+3. **MLP** (réseau de neurones)
+   - Embeddings catégoriels
+   - Capture relations non-linéaires
+   - Diversité d'approche
+
+**Performances ensemble** :
 - **Métrique principale** : Recall (priorité détection accidents)
 - **Accuracy** : 98.2%
 - **Recall accidents** : 87.0%

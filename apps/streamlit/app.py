@@ -11,9 +11,18 @@ from streamlit_folium import st_folium
 import folium
 from folium.plugins import HeatMap
 import numpy as np
+import os
+import joblib
+import traceback
+from dagster_pipeline.assets.blending_utils import predict_blend
 
 from src.accidents.ducklake import get_client
 from src.accidents.gold.schema import GOLD_SCHEMA
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
 
 # Configuration de la page
 st.set_page_config(
@@ -34,13 +43,16 @@ def get_ducklake_connection():
 def load_trained_model():
     """Charge le modèle entraîné depuis gold.models (si disponible)."""
     try:
-        client = get_ducklake_connection()
-        # TODO: Charger le modèle depuis S3 ou gold schema
-        st.info("🚧 Chargement modèle depuis DuckLake en développement")
-        return None
-    except Exception as e:
-        st.error(f"⚠️ Erreur chargement modèle: {e}")
-        return None
+        local_path = "blend_model.pkl"
+        if os.path.exists(local_path):
+            try:
+                return joblib.load(local_path), local_path, None
+            except Exception:
+                return None, local_path, traceback.format_exc()
+        # pas trouvé localement
+        return None, None, None
+    except Exception:
+        return None, None, traceback.format_exc()
 
 
 @st.cache_data(ttl=3600)
@@ -62,12 +74,20 @@ def load_prediction_grid():
         """
         
         df = client.conn.execute(query).df()
-        st.success(f"✅ Grille chargée: {len(df)} points")
         return df
         
-    except Exception as e:
-        st.error(f"⚠️ Erreur chargement grille: {e}")
+    except Exception:
         return pd.DataFrame()
+
+
+@st.cache_data(ttl=300)
+def compute_risk_scores(n_points: int, seed: int):
+    """Renvoie des scores déterministes via Beta(rng) pour la démo.
+
+    Utilise un seed stable (basé sur datetime+atm) pour éviter des reruns visuels.
+    """
+    rng = np.random.RandomState(seed)
+    return rng.beta(2, 5, size=n_points)
 
 
 def create_prediction_features(grid_df, prediction_datetime, atm_code):
@@ -205,10 +225,19 @@ else:
 
 with st.spinner("📥 Chargement des données..."):
     grid_df = load_prediction_grid()
-
+    
 if grid_df.empty:
     st.error("❌ Impossible de charger la grille de prédiction. Vérifiez la connexion DuckLake.")
     st.stop()
+
+# Charger le modèle (si présent localement ou via DuckLake si implémenté)
+model, model_path, model_err = load_trained_model()
+if model is not None:
+    st.success(f"✅ Modèle chargé ({model_path})")
+elif model_path is not None and model_err:
+    # afficher une erreur concise (traceback complet reste dans logs)
+    last_line = model_err.splitlines()[-1] if model_err else ""
+    st.error(f"⚠️ Erreur chargement modèle depuis {model_path}: {last_line}")
 
 # ==========================================
 # GÉNÉRATION PRÉDICTIONS
@@ -223,9 +252,28 @@ with st.spinner("🤖 Génération des prédictions..."):
     # Préparer features
     features_df = create_prediction_features(grid_df, prediction_datetime, atm_code)
     
-    # TODO: Charger et appliquer le modèle
-    # Pour l'instant, scores aléatoires pour la démo
-    features_df['risk_score'] = np.random.beta(2, 5, len(features_df))
+    # Charger les 3 modèles de base et recalculer le blending
+    model_paths = ["catboost_model.pkl", "xgboost_model.pkl", "mlp_model.pkl"]
+    # Vérifier disponibilité des fichiers
+    missing = [p for p in model_paths if not os.path.exists(p)]
+    if missing:
+        st.error(f"Fichiers modèles manquants: {missing}. Placez les modèles à la racine du projet.")
+        st.stop()
+
+    # Construire X numérique attendu par les modèles en utilisant la liste
+    # canonique `FEATURE_COLUMNS` (même ordre que l'entraînement).
+    from pipeline.stage_datasets import FEATURE_COLUMNS
+
+    missing_feat = [c for c in FEATURE_COLUMNS if c not in features_df.columns]
+    if missing_feat:
+        st.error(f"Colonnes features manquantes pour les modèles : {missing_feat}")
+        st.stop()
+
+    X = features_df[FEATURE_COLUMNS].astype(float).values
+
+    proba = predict_blend(X, model_paths)
+    
+    features_df['risk_score'] = proba
     
     # Filtrer
     if display_mode == "Top N points":
@@ -250,12 +298,12 @@ st.markdown("---")
 
 if not predictions_df.empty:
     risk_map = create_risk_map(predictions_df)
-    st_folium(risk_map, width=1200, height=600)
+    st_folium(risk_map, key="risk_map", width=1200, height=600)
     
     st.markdown("### 📋 Top 10 zones à risque")
     top_10 = predictions_df.nlargest(10, 'risk_score')[['latitude', 'longitude', 'risk_score', 'hour', 'atm']]
     top_10['risk_score'] = top_10['risk_score'].apply(lambda x: f"{x:.1%}")
-    st.dataframe(top_10, use_container_width=True)
+    st.dataframe(top_10, width='stretch')
 else:
     st.warning("⚠️ Aucun point à risque détecté avec ces paramètres.")
 

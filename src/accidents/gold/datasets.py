@@ -8,6 +8,7 @@ import boto3
 import joblib
 import pandas as pd
 from sklearn.model_selection import train_test_split
+from sklearn.cluster import KMeans
 from sklearn.preprocessing import LabelEncoder
 
 from ..ducklake import get_client
@@ -20,15 +21,20 @@ S3_CACHE_PREFIX = "cache/"
 S3_ENDPOINT = os.getenv("S3_ENDPOINT", "https://rustfs.tgu.ovh")
 
 # Features utilisées pour ML
+# ⚠️ IMPORTANT: latitude/longitude SUPPRIMÉES pour éviter Data Leakage GPS
+# Remplacées par geo_cluster (K-Means clustering)
 FEATURE_COLUMNS = [
-    'latitude', 'longitude',
+    'geo_cluster',  # Clustering géographique (50 zones de risque)
     'hour', 'dayofweek', 'month',
     'atm',
     'is_weekend', 'is_rush_morning', 'is_rush_evening', 'is_night',
     'hour_sin', 'hour_cos', 'dayofweek_sin', 'dayofweek_cos',
-    # 'road_type', 'speed_limit',
+    # 'road_type', 'speed_limit',
     'is_holiday', 'school_holidays'
 ]
+
+# Paramètres clustering géographique
+N_GEO_CLUSTERS = 100  # Nombre de zones de risque à identifier
 
 # Paramètres split
 TEST_SIZE = 0.2
@@ -59,7 +65,15 @@ def _upload_to_s3(local_path: Path, s3_key: str) -> bool:
 
 
 def build_datasets() -> dict[str, int]:
-    """Crée gold.train et gold.test depuis silver.full_dataset."""
+    """
+    Crée gold.train et gold.test depuis silver.full_dataset.
+    
+    🔧 Pipeline anti-leakage :
+    1. Clustering géographique K-Means sur TRAIN uniquement
+    2. Suppression latitude/longitude
+    3. Ajout geo_cluster (catégorique)
+    4. Sauvegarde kmeans.pkl pour production
+    """
     print("🎯 Construction datasets ML...")
     
     client = get_client()
@@ -73,20 +87,52 @@ def build_datasets() -> dict[str, int]:
     le = LabelEncoder()
     df['atm'] = le.fit_transform(df['atm'].astype(str))
     
-    # Filtrer colonnes et supprimer NA
-    dataset = df.dropna(subset=FEATURE_COLUMNS)
+    # ========== CLUSTERING GÉOGRAPHIQUE (Anti-Leakage GPS) ==========
+    print("🗺️  Création des zones de risque géographiques (K-Means)...")
+    
+    # Split AVANT clustering pour éviter la fuite
+    # On a besoin de lat/lon temporairement pour le clustering
+    features_base = [col for col in FEATURE_COLUMNS if col != 'geo_cluster']
+    temp_features = features_base + ['latitude', 'longitude']
+    
+    dataset = df.dropna(subset=temp_features)
     print(f"✅ Après drop NA: {len(dataset)} lignes")
     
-    X = dataset[FEATURE_COLUMNS]
+    X_temp = dataset[temp_features]
     y = dataset['target']
     
     # Split train/test stratifié
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y,
+    X_train_temp, X_test_temp, y_train, y_test = train_test_split(
+        X_temp, y,
         test_size=TEST_SIZE,
         random_state=RANDOM_STATE,
         stratify=y
     )
+    
+    # 1. FIT K-Means sur TRAIN uniquement (évite data leakage)
+    kmeans = KMeans(
+        n_clusters=N_GEO_CLUSTERS,
+        random_state=RANDOM_STATE,
+        n_init=10,
+        max_iter=300
+    )
+    
+    train_coords = X_train_temp[['latitude', 'longitude']].values
+    kmeans.fit(train_coords)
+    print(f"✅ K-Means fitted sur {len(train_coords)} points train")
+    
+    # 2. TRANSFORM train et test
+    X_train_temp['geo_cluster'] = kmeans.predict(train_coords)
+    X_test_temp['geo_cluster'] = kmeans.predict(
+        X_test_temp[['latitude', 'longitude']].values
+    )
+    
+    # 3. SUPPRIMER latitude/longitude (prévention leakage)
+    X_train = X_train_temp[FEATURE_COLUMNS].copy()
+    X_test = X_test_temp[FEATURE_COLUMNS].copy()
+    
+    print(f"🚨 GPS supprimé ! geo_cluster ajouté ({N_GEO_CLUSTERS} zones)")
+    print(f"   Distribution clusters train: {X_train['geo_cluster'].nunique()} zones uniques")
     
     # Créer DataFrames finaux
     train_df = X_train.copy()
@@ -118,12 +164,14 @@ def build_datasets() -> dict[str, int]:
     # Sauvegarder encoders localement et sur S3
     joblib.dump(le, 'atm_encoder.pkl')
     joblib.dump(FEATURE_COLUMNS, 'features.pkl')
+    joblib.dump(kmeans, 'kmeans_geo.pkl')
     
     _upload_to_s3(Path('atm_encoder.pkl'), f"{S3_CACHE_PREFIX}atm_encoder.pkl")
     _upload_to_s3(Path('features.pkl'), f"{S3_CACHE_PREFIX}features.pkl")
+    _upload_to_s3(Path('kmeans_geo.pkl'), f"{S3_CACHE_PREFIX}kmeans_geo.pkl")
     
     print(f"💾 Tables gold.train ({len(train_df)}) et gold.test ({len(test_df)}) créées")
-    print(f"💾 Encoders sauvegardés: atm_encoder.pkl, features.pkl")
+    print(f"💾 Encoders sauvegardés: atm_encoder.pkl, features.pkl, kmeans_geo.pkl")
     
     return {
         'train_rows': len(train_df),
@@ -131,4 +179,6 @@ def build_datasets() -> dict[str, int]:
         'total_features': len(FEATURE_COLUMNS),
         'train_positives': int(y_train.sum()),
         'test_positives': int(y_test.sum()),
+        'n_geo_clusters': N_GEO_CLUSTERS,
+        'geo_cluster_coverage': f"{X_train['geo_cluster'].nunique()}/{N_GEO_CLUSTERS}"
     }

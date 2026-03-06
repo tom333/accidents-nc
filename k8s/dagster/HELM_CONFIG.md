@@ -30,7 +30,7 @@ spec:
     helm:
       values: |
         # ... configuration existante ...
-        
+
         dagsterWebserver:
           workspace:
             enabled: true
@@ -38,7 +38,7 @@ spec:
               - host: dagster-user-code-accidents
                 port: 4000
                 location_name: accidents_pipeline
-        
+
         runLauncher:
           type: K8sRunLauncher
           config:

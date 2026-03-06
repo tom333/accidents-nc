@@ -7,23 +7,23 @@ metadata:
     - resources-finalizer.argocd.argoproj.io
 spec:
   project: infra-project
-  
+
   source:
     repoURL: https://github.com/tom333/accidents-nc.git  # À adapter avec votre repo
     targetRevision: main
     path: k8s/dagster
-  
+
   destination:
     server: https://kubernetes.default.svc
     namespace: dagster
-  
+
   syncPolicy:
     automated:
       prune: true
       selfHeal: true
     syncOptions:
       - CreateNamespace=false
-  
+
   ignoreDifferences:
     - group: apps
       kind: Deployment

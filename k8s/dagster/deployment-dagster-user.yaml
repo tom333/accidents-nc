@@ -29,7 +29,7 @@ spec:
           - api
           - grpc
           - --module-name
-          - dagster_pipeline.definitions
+          - src.definitions
           - --attribute
           - defs
           - --port

@@ -220,4 +220,3 @@ L'Application ArgoCD crée dans le namespace `dagster` :
 - **PVC** : `dagster-models-pvc` (5Gi pour artefacts ML)
 - **Deployment** : `dagster-user-deployment-accidents` (user-code)
 - **Service** : `dagster-user-code-accidents` (ClusterIP:4000)
-

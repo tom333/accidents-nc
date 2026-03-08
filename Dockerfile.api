@@ -12,18 +12,24 @@ ENV UV_COMPILE_BYTECODE=1 \
 
 WORKDIR /app
 
+# Build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install deps without the project to maximize caching
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=uv.lock,target=uv.lock \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
-    uv sync --locked --no-install-project --extra streamlit
+    uv sync --locked --no-install-project --extra api
 
 # Copy project files
 COPY --link . /app
 
-# Install project with streamlit extra
+# Install project with api extra
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked --extra streamlit
+    uv sync --locked --extra api
 
 # ============================================
 # Stage 2: Runtime - minimal production image
@@ -31,28 +37,30 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 FROM python:3.12-slim-bookworm
 
 # Create non-root user
-RUN groupadd --system --gid 1000 streamlit && \
-    useradd --system --gid 1000 --uid 1000 --create-home streamlit
+RUN groupadd --system --gid 1000 api && \
+    useradd --system --gid 1000 --uid 1000 --create-home api
 
 WORKDIR /app
 
-# Copy only the virtual environment and app sources
-COPY --from=builder --chown=streamlit:streamlit /app/.venv /app/.venv
-COPY --from=builder --chown=streamlit:streamlit /app/apps/streamlit /app/apps/streamlit
-# routes.nc is still needed for the geographical grid generation
-COPY --from=builder --chown=streamlit:streamlit /app/routes.nc /app/routes.nc
+# Copy only the virtual environment and required sources/artifacts
+COPY --from=builder --chown=api:api /app/.venv /app/.venv
+COPY --from=builder --chown=api:api /app/src /app/src
+COPY --from=builder --chown=api:api /app/apps/api /app/apps/api
+
+# Copy models and preprocessors (artifacts required for inference)
+COPY --from=builder --chown=api:api /app/*.pkl /app/
+COPY --from=builder --chown=api:api /app/blend_metrics.json /app/
 
 # Ensure the venv is used by default
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONPATH=/app \
     PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    API_URL="http://api:8000"
+    PYTHONDONTWRITEBYTECODE=1
 
-USER streamlit
+USER api
 
-# Expose Streamlit port
-EXPOSE 8501
+# Expose FastAPI port
+EXPOSE 8000
 
-# Run Streamlit
-CMD ["streamlit", "run", "apps/streamlit/app_predict_map.py", "--server.port=8501", "--server.address=0.0.0.0"]
+# Run Uvicorn
+CMD ["uvicorn", "apps.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

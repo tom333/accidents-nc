@@ -18,9 +18,9 @@ docker_build(
     # Live update: sync Python files sans rebuild complet
     live_update=[
         sync('./src/accidents', '/app/src/accidents'),
-        sync('./dagster_pipeline', '/app/dagster_pipeline'),
+
         # Redémarrer le processus après sync
-        run('kill -HUP 1', trigger=['./src/accidents', './dagster_pipeline']),
+        run('kill -HUP 1', trigger=['./src/accidents']),
     ],
     # Ignore les fichiers volumineux
     ignore=[

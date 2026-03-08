@@ -17,10 +17,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-      
+
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
@@ -33,7 +33,7 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=sha,prefix={{branch}}-
             type=raw,value=latest,enable={{is_default_branch}}
-      
+
       - name: Build Dagster image
         uses: docker/build-push-action@v6
         with:
@@ -46,7 +46,7 @@ jobs:
           cache-to: type=gha,mode=max
           build-args: |
             CACHEBUST=${{ github.sha }}
-      
+
       - name: Scan image for vulnerabilities
         uses: aquasecurity/trivy-action@master
         with:
@@ -54,7 +54,7 @@ jobs:
           format: 'sarif'
           output: 'trivy-dagster.sarif'
         continue-on-error: true
-      
+
       - name: Upload Trivy results
         uses: github/codeql-action/upload-sarif@v3
         with:
@@ -66,10 +66,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-      
+
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
@@ -82,7 +82,7 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=sha,prefix={{branch}}-
             type=raw,value=latest,enable={{is_default_branch}}
-      
+
       - name: Build Streamlit image
         uses: docker/build-push-action@v6
         with:
@@ -93,7 +93,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-      
+
       - name: Scan image for vulnerabilities
         uses: aquasecurity/trivy-action@master
         with:
@@ -101,7 +101,7 @@ jobs:
           format: 'sarif'
           output: 'trivy-streamlit.sarif'
         continue-on-error: true
-      
+
       - name: Upload Trivy results
         uses: github/codeql-action/upload-sarif@v3
         with:

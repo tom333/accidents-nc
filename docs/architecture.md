@@ -21,7 +21,8 @@ Ce document détaille l'architecture technique du système de prédiction d'acci
 
 ### Principes architecturaux
 
-Le projet suit une **architecture moderne de data platform** basée sur :
+Le projet suit- [x] src/assets/ architecture
+oderne de data platform** basée sur :
 
 1. **Architecture médaillons** : Bronze (raw) → Silver (features) → Gold (ML)
 2. **Lakehouse pattern** : DuckLake (DuckDB + PostgreSQL + S3)
@@ -102,7 +103,7 @@ External Data → 🥉 Bronze → 🥈 Silver → 🥇 Gold → ML Models
 
 **Rôle** : Ingestion et stockage des données brutes sans transformation
 
-**Source** : 
+**Source** :
 - CSV data.gouv.fr (2019-2024)
 - 2 fichiers par année : `caracteristiques-YYYY.csv` + `usagers-YYYY.csv`
 
@@ -116,7 +117,7 @@ External Data → 🥉 Bronze → 🥈 Silver → 🥇 Gold → ML Models
 - `bronze.usagers` : Victimes par accident
 - `bronze.accidents_nc` : Join caracteristiques + usagers (dep=988)
 
-**Code** : [src/accidents/bronze/ingest.py](../src/accidents/bronze/ingest.py)
+**Code** : [src/assets/bronze/ingest.py](../src/assets/bronze/ingest.py)
 
 **Exemple de données bronze** :
 ```python
@@ -164,9 +165,9 @@ External Data → 🥉 Bronze → 🥈 Silver → 🥇 Gold → ML Models
 **Tables créées** :
 - `silver.features` : Dataset complet avec features + négatifs
 
-**Code** : 
-- [src/accidents/silver/features.py](../src/accidents/silver/features.py)
-- [src/accidents/silver/negatives.py](../src/accidents/silver/negatives.py)
+**Code** :
+- [src/assets/silver/features.py](../src/assets/silver/features.py)
+- [src/assets/silver/negatives.py](../src/assets/silver/negatives.py)
 
 **Exemple de données silver** :
 ```python
@@ -218,9 +219,9 @@ External Data → 🥉 Bronze → 🥈 Silver → 🥇 Gold → ML Models
 - `atm_encoder.pkl` : Encoder conditions météo
 - `features.pkl` : Liste features utilisées
 
-**Code** : 
-- [src/accidents/gold/datasets.py](../src/accidents/gold/datasets.py)
-- [src/accidents/gold/training.py](../src/accidents/gold/training.py)
+**Code** :
+- [src/assets/gold/datasets.py](../src/assets/gold/datasets.py)
+- [src/assets/gold/training.py](../src/assets/gold/training.py)
 
 **Exemple de données gold** :
 ```python
@@ -279,7 +280,7 @@ C'est une implémentation moderne de **lakehouse** qui combine :
 #### 1. Écriture de données
 
 ```python
-from src.accidents.ducklake import get_client
+from src.ducklake import get_client
 
 client = get_client()
 
@@ -297,8 +298,8 @@ client.write(
 2. PostgreSQL catalog enregistre :
    ```sql
    INSERT INTO ducklake.tables VALUES (
-       'bronze', 
-       'accidents_nc', 
+       'bronze',
+       'accidents_nc',
        's3://accidents/bronze/accidents_nc/',
        'parquet',
        1234567,  -- row_count
@@ -334,10 +335,10 @@ df = client.table("bronze.accidents_nc").pl()
 
 ### Configuration
 
-[src/accidents/config.py](../src/accidents/config.py) :
+[src/config.py](../src/config.py) :
 
 ```python
-from src.accidents.config import get_config
+from src.config import get_config
 
 config = get_config()
 config.postgres_url
@@ -374,31 +375,32 @@ def silver_data(bronze_data): ...
 ### Assets du Projet
 
 ```python
-# dagster_pipeline/assets/bronze.py
+# src/assets/bronze/ingest.py
 @asset
 def bronze_accidents_nc() -> int:
     """Asset Bronze : Ingestion CSV + filtrage dep 988"""
-    from src.accidents.bronze.ingest import ingest_all
+    from src.assets.bronze.ingest import ingest_all
     return ingest_all()
 
-# dagster_pipeline/assets/silver.py
+# src/assets/silver/features.py
 @asset
 def silver_features(bronze_accidents_nc: int) -> int:
     """Asset Silver : Features temporelles + OSM + négatifs"""
-    from src.accidents.silver.features import build_feature_store
+    from src.assets.silver.features import build_feature_store
     return build_feature_store()
 
-# dagster_pipeline/assets/gold.py
+# src/assets/gold/datasets.py
 @asset
 def gold_train_test(silver_features: int) -> dict:
     """Asset Gold : Split train/test stratifié"""
-    from src.accidents.gold.datasets import create_ml_datasets
+    from src.assets.gold.datasets import create_ml_datasets
     return create_ml_datasets()
 
+# src/assets/gold/training.py
 @asset
 def gold_models(gold_train_test: dict) -> str:
     """Asset Gold : Training CatBoost + Optuna"""
-    from src.accidents.gold.training import train_best_model
+    from src.assets.gold.training import train_best_model
     return train_best_model(gold_train_test)
 ```
 
@@ -418,15 +420,15 @@ Dagster **dérive automatiquement le DAG** à partir des dépendances entre asse
 
 ### Resources Dagster
 
-[dagster_pipeline/resources/ducklake.py](../dagster_pipeline/resources/ducklake.py) :
+[src/resources/ducklake.py](../src/resources/ducklake.py) :
 
 ```python
 from dagster import ConfigurableResource
-from src.accidents.ducklake import DuckLakeClient
+from src.ducklake import DuckLakeClient
 
 class DuckLakeResource(ConfigurableResource):
     """Resource Dagster pour DuckLake"""
-    
+
     def get_client(self) -> DuckLakeClient:
         return get_client()
 

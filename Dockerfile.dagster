@@ -1,0 +1,41 @@
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_LINK_MODE=copy \
+    PYTHONPATH=/app
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    curl \
+    gdal-bin \
+    libgdal-dev \
+    libgeos-dev \
+    libproj-dev \
+    proj-data \
+    proj-bin \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+# Installer les dépendances (layer cachée tant que pyproject.toml/uv.lock ne changent pas)
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=bind,source=uv.lock,target=uv.lock \
+    --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
+    uv sync --locked --no-install-project
+
+# Copier le code source
+COPY pyproject.toml uv.lock /app/
+COPY src /app/src
+
+# Installer le projet sans re-télécharger les dépendances
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --locked
+
+ENV PATH="/app/.venv/bin:$PATH"
+
+EXPOSE 4000
+
+CMD ["dagster", "api", "grpc", "-h", "0.0.0.0", "-p", "4000", "-m", "src.definitions"]

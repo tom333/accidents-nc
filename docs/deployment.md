@@ -413,7 +413,7 @@ dagsterUserDeployments:
       pullPolicy: Always
     dagsterApiGrpcArgs:
     - "-f"
-    - "/opt/dagster/app/dagster_pipeline/definitions.py"
+    - "/opt/dagster/app/src/definitions.py"
     port: 3030
     envSecrets:
     - name: ducklake-secrets
@@ -747,7 +747,7 @@ Déjà créés dans [.github/workflows/](../.github/workflows/) :
 
 ```bash
 # 1. Commit changement
-git add src/accidents/bronze/ingest.py
+git add src/bronze/ingest.py
 git commit -m "feat(bronze): improve error handling"
 git push origin main
 

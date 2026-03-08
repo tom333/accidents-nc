@@ -17,18 +17,18 @@ jobs:
     name: Update Image Tags in K8s Manifests
     runs-on: ubuntu-latest
     if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
-    
+
     steps:
       - uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
-      
+
       - name: Configure Git
         run: |
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
-      
+
       - name: Determine image tag
         id: tag
         run: |
@@ -39,51 +39,51 @@ jobs:
           fi
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "📦 Image tag: $TAG"
-      
+
       - name: Update Dagster deployment
         run: |
           TAG="${{ steps.tag.outputs.tag }}"
           FILE="k8s/dagster/deployment-dagster-user.yaml"
-          
+
           # Remplacer l'image tag dans le deployment
           sed -i "s|image: localhost:32000/accidents-dagster:.*|image: localhost:32000/accidents-dagster:$TAG|g" $FILE
-          
+
           echo "✅ Updated $FILE with tag $TAG"
-      
+
       - name: Update Streamlit deployment
         run: |
           TAG="${{ steps.tag.outputs.tag }}"
           FILE="k8s/streamlit/deployment.yaml"
-          
+
           # Remplacer l'image tag dans le deployment
           sed -i "s|image: localhost:32000/accidents-streamlit:.*|image: localhost:32000/accidents-streamlit:$TAG|g" $FILE
-          
+
           echo "✅ Updated $FILE with tag $TAG"
-      
+
       - name: Commit and push changes
         run: |
           TAG="${{ steps.tag.outputs.tag }}"
-          
+
           if git diff --quiet; then
             echo "ℹ️  No changes to commit"
             exit 0
           fi
-          
+
           git add k8s/dagster/deployment-dagster-user.yaml
           git add k8s/streamlit/deployment.yaml
-          
+
           git commit -m "chore(k8s): update images to $TAG
 
           - Dagster: localhost:32000/accidents-dagster:$TAG
           - Streamlit: localhost:32000/accidents-streamlit:$TAG
-          
+
           Triggered by: ${{ github.event_name }}
           Commit: ${{ github.sha }}"
-          
+
           git push origin main
-          
+
           echo "✅ Pushed manifest updates to main"
-      
+
       - name: Trigger ArgoCD sync (optional)
         run: |
           echo "📡 ArgoCD auto-sync is enabled"

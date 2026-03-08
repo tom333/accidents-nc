@@ -36,12 +36,17 @@ dependencies = [
     "xgboost==3.1.3",
     "imblearn==0.0",
     "matplotlib==3.10.8",
+    "shap>=0.49.1",
+    "setuptools>=82.0.0",
+    "evidently>=0.7.20",
+    "dagster-mlflow>=0.28.14",
+    "pre-commit>=4.5.1",
 ]
 
 [[tool.uv.index]]
 name = "pytorch-cu121"
 url = "https://download.pytorch.org/whl/cu121"
-explicit = true 
+explicit = true
 
 # 2. On force uv à utiliser cet index uniquement pour ces paquets spécifiques
 [tool.uv.sources]
@@ -57,11 +62,18 @@ dev = [
     "pytest-mock>=3.14.0",
     "ruff>=0.9.1",
     "marimo[recommended]>=0.19.4",
+    "pre-commit>=4.0.0",
 ]
 streamlit = [
     "streamlit>=1.53.1",
     "streamlit-folium>=0.26.1",
     "folium>=0.20.0",
+]
+api = [
+    "fastapi>=0.115.0",
+    "uvicorn>=0.30.0",
+    "pydantic>=2.9.0",
+    "python-multipart>=0.0.12",
 ]
 
 [build-system]
@@ -70,7 +82,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["dagster_pipeline*", "src*", "apps*"]
+include = ["src*", "apps*"]
 exclude = ["k8s*", "data*", "archive*", "exploration*", "catboost_info*", "tests*"]
 
 [tool.pytest.ini_options]

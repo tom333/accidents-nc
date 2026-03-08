@@ -36,18 +36,45 @@ P_final = (0.4 × P_catboost + 0.4 × P_xgboost + 0.2 × P_mlp) / 1.0
 
 **Performances de l'ensemble** :
 
-| Métrique | Accident | Pas Accident | Global |
-|----------|----------|--------------|--------|
-| **Recall** | **87.0%** | 99.7% | - |
-| **Precision** | 97.9% | 98.3% | - |
-| **F1-Score** | 0.92 | 0.99 | - |
-| **Accuracy** | - | - | **98.2%** |
+| Métrique | Valeur |
+|----------|--------|
+| **Recall** | **92.2%** |
+| **Precision** | 94.5% |
+| **F1-Score** | **93.3%** |
+| **AUC-ROC** | **98.0%** |
+| **Seuil optimal** | 0.641 |
 
-**Résultat clé** : Détecte **272/312 accidents réels** (87%), avec seulement 40 faux négatifs et 6 faux positifs.
+**AUC-ROC par modèle** :
 
-**Avantage blending** : Combine les forces de chaque modèle pour une prédiction plus robuste et stable.
+| Modèle | AUC-ROC |
+|--------|---------|
+| CatBoost | 97.8% |
+| XGBoost | 97.7% |
+| MLP | 97.3% |
+| **Blend (ensemble)** | **98.0%** |
+
+**Résultat clé** : Le blend combine la force de chaque modèle et dépasse tous les modèles individuels en AUC-ROC (+0.2pp vs CatBoost).
+
+### 🧐 Analyse des Résultats
+
+> **TL;DR : Ces résultats sont excellents** pour un problème de prédiction spatiale sur données déséquilibrées.
+
+**Ce que chaque métrique signifie concrètement :**
+
+| Métrique | Interprétation terrain |
+|----------|------------------------|
+| **Recall 92.2%** | Sur 100 zones dangereuses réelles, le modèle en détecte **92**. Seulement **8 sont manquées** (faux négatifs). |
+| **Precision 94.5%** | Sur 100 alertes émises, **94–95 correspondent à une vraie zone à risque**. Très peu de fausses alarmes. |
+| **AUC-ROC 98.0%** | Le modèle discrimine quasi-parfaitement les zones à risque sur l’ensemble des seuils. Un score ≥ 95% est considéré excellent ; ≥ 98% est de niveau production. |
+| **Seuil 0.641** | Optimisé (vs 0.5 par défaut), il réduit les fausses alarmes tout en maintenant un recall élevé. |
+
+**Pourquoi le blend apporte quelque chose ?** Les 3 modèles font des erreurs sur des exemples *différents*. En les combinant (pondération 40/40/20), le blend "vote" de façon plus robuste : une zone difficile a bien moins de chances d’être mal classifiée par les **trois** modèles simultanément.
+
+**Ce qui reste imparfait :** 8% de faux négatifs (zones à risque non détectées) et 5.5% de fausses alarmes.
+Dans un contexte de sécurité routière, manquer une zone à risque est plus coûteux qu’une fausse alerte — le recall de **92.2%** est donc la métrique à maximiser en priorité.
 
 ---
+
 
 ## 🏗️ Architecture
 
@@ -72,11 +99,10 @@ P_final = (0.4 × P_catboost + 0.4 × P_xgboost + 0.2 × P_mlp) / 1.0
 │              DATA PIPELINE (Médaillons)                      │
 ├──────────────────────┬──────────────┬───────────────────────┤
 │  🥉 Bronze           │  🥈 Silver   │  🥇 Gold              │
-│  src/accidents/      │  src/        │  src/                 │
-│  bronze/             │  accidents/  │  accidents/           │
-│  ├─ ingest.py        │  silver/     │  gold/                │
-│  └─ raw data         │  ├─ features │  ├─ datasets.py       │
-│                      │  └─ enrich   │  └─ training.py       │
+│  src/assets/         │  src/assets/ │  src/assets/          │
+│  bronze/             │  silver/     │  gold/                │
+│  ├─ ingest.py        │  ├─ features │  ├─ datasets.py       │
+│  └─ raw data         │  └─ enrich   │  └─ training.py       │
 └──────────────────────┴──────────────┴───────────────────────┘
                             ↓
 ┌─────────────────────────────────────────────────────────────┐
@@ -113,38 +139,17 @@ CSV data.gouv.fr → 🥉 Bronze → 🥈 Silver → 🥇 Gold → Modèles ML �
 
 ```
 accidents/
-├── src/
-│   └── accidents/              # 🎯 Code métier principal
-│       ├── bronze/             # Ingestion données brutes
-│       │   └── ingest.py
-│       ├── silver/             # Features engineering
-│       │   ├── features.py
-│       │   └── negatives.py
-│       ├── gold/               # Datasets ML + Training
-│       │   ├── datasets.py
-│       │   ├── training.py         # Training principal (legacy)
-│       │   └── schema.py
-│       ├── utils/              # Utilitaires
-│       │   ├── spatial.py
-│       │   ├── temporal.py
-│       │   └── metrics.py
-│       ├── ducklake.py         # Client DuckLake
-│       └── config.py           # Configuration
-│
-├── dagster_pipeline/           # 🎭 Assets Dagster
-│   ├── assets/
-│   │   ├── bronze.py           # Assets bronze (wrappers)
-│   │   ├── silver.py           # Assets silver
-│   │   ├── gold.py             # Assets gold (datasets)
-│   │   ├── catboost.py         # Modèle CatBoost (Optuna)
-│   │   ├── xgboost.py          # Modèle XGBoost (Optuna)
-│   │   ├── mlp.py              # Modèle MLP (PyTorch)
-│   │   ├── blending.py         # Ensemble blending
-│   │   └── blending_utils.py   # Utilitaires blending
-│   ├── definitions.py          # Définitions Dagster
+├── src/                        # 🎯 Code source consolidé
+│   ├── assets/                 # Assets Dagster (Médaillons)
+│   │   ├── bronze/             # Ingestion (DuckDB)
+│   │   ├── silver/             # Feature Engineering
+│   │   └── gold/               # Datasets ML + Models
+│   ├── resources/              # Ressources (DuckLake)
+│   ├── utils/                  # Utilitaires (Spatiaux, etc.)
+│   ├── definitions.py          # Point d'entrée Dagster
 │   ├── schedules.py            # Jobs schedulés
-│   └── resources/
-│       └── ducklake.py         # Resource DuckLake
+│   ├── ducklake.py             # Client DuckLake common
+│   └── config.py               # Configuration
 │
 ├── apps/                       # 🌐 Applications
 │   ├── api/                    # FastAPI (prédictions)
@@ -230,7 +235,7 @@ docker-compose ps
 
 # Lancer Dagster UI
 cd ../..
-PYTHONPATH=$PWD dagster dev -f dagster_pipeline/definitions.py
+PYTHONPATH=$PWD dagster dev -f src/definitions.py
 
 # Ouvrir http://localhost:3000
 ```
@@ -327,8 +332,8 @@ Push main → CI Tests → CI Build → CD Update Manifests → ArgoCD Deploy
 
 3. **Vérifier les données dans DuckLake** :
    ```python
-   from src.accidents.ducklake import get_client
-   
+   from src.ducklake import get_client
+
    client = get_client()
    df = client.table("bronze.accidents_nc").limit(10).pl()
    print(df)
@@ -381,10 +386,10 @@ DAGSTER_HOME=/opt/dagster/dagster_home
 
 ### Configuration DuckLake
 
-[src/accidents/config.py](src/accidents/config.py) :
+[src/config.py](src/config.py) :
 
 ```python
-from src.accidents.config import get_config
+from src.config import get_config
 
 config = get_config()
 config.postgres_url
@@ -510,17 +515,28 @@ Namespace: ia-lab
 
 **Performances ensemble** :
 - **Métrique principale** : Recall (priorité détection accidents)
-- **Accuracy** : 98.2%
-- **Recall accidents** : 87.0%
-- **Precision accidents** : 97.9%
+- **Recall** : **92.2%**
+- **Precision** : 94.5%
+- **F1-Score** : 93.3%
+- **AUC-ROC** : **98.0%** (Blend) vs 97.8% (CatBoost) / 97.7% (XGBoost) / 97.3% (MLP)
+- **Seuil optimal** : 0.641 (optimisé sur la courbe Precision-Recall)
+
+### Rapports de Qualité (Evidently AI)
+
+Le pipeline inclut désormais une étape de reporting automatisée via **Evidently AI** (asset `evidently_report`).
+Ce rapport génère un dashboard HTML interactif contenant :
+- **Classification Dashboard** : ROC, PR curves, et métriques par seuil.
+- **Data Drift** : Détection de décalage statistique entre les données de train (référence) et le jeu de test actuel.
+- **Feature Stats** : Statistiques descriptives complètes des caractéristiques.
+- **Contextualisation** : Accompagné de textes explicatifs pour faciliter l'interprétation des résultats.
 
 ### Features Importantes
 
 1. **hour_of_day** (heure)
-2. **latitude** (position)
-3. **longitude** (position)
-4. **atm** (conditions météo)
-5. **day_of_week** (jour semaine)
+2. **geo_cluster** (position regroupée par K-Means)
+3. **atm** (conditions météo)
+4. **day_of_week** (jour semaine)
+5. **road_type_id** (type de route)
 
 ---
 
@@ -596,10 +612,13 @@ MIT License - Voir [LICENSE](LICENSE)
 
 ## 📧 Contact
 
-**Auteur** : Tom  
-**Projet** : https://github.com/tom333/accidents-nc  
-**Dagster UI** : https://dagster.tgu.ovh  
+**Author** : Tom
+**Project** : https://github.com/tom333/accidents-nc
+**Dagster UI** : https://dagster.tgu.ovh
 **Streamlit App** : https://streamlit.tgu.ovh
+**MLflow Tracking** : (Artefacts de rapport Evidently disponibles dans les runs)
+
+---
 
 ---
 

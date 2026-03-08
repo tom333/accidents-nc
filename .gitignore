@@ -53,3 +53,6 @@ mlruns
 REFONTE_PROGRESS.md
 PHASE*.md
 dagster_home
+feature_importance_catboost.png
+shap_bar_plot.png
+shap_summary_plot.png

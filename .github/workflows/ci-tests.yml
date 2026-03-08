@@ -12,18 +12,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Install uv
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-      
+
       - name: Set up Python
         run: uv python install 3.12
-      
+
       - name: Install dependencies
         run: uv sync --dev
-      
+
       - name: Check code formatting (ruff)
         run: |
           uv run ruff check src/ tests/ dagster_pipeline/ apps/ --output-format=github
@@ -34,22 +34,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Install uv
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-      
+
       - name: Set up Python
         run: uv python install 3.12
-      
+
       - name: Install dependencies
         run: uv sync --dev
-      
+
       - name: Run unit tests
         run: |
           uv run pytest tests/unit/ -v --cov=src/accidents --cov-report=term --cov-report=xml
-      
+
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
         with:
@@ -61,30 +61,30 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Install uv
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-      
+
       - name: Set up Python
         run: uv python install 3.12
-      
+
       - name: Install dependencies
         run: uv sync
-      
+
       - name: Run Phase 1 validation
         run: uv run python tests/test_phase1_validation.py
-      
+
       - name: Run Phase 2 validation
         run: uv run python tests/test_phase2_validation.py
-      
+
       - name: Run Phase 3 validation
         run: uv run python tests/test_phase3_validation.py
-      
+
       - name: Run Phase 4 validation
         run: uv run python tests/test_phase4_validation.py
-      
+
       - name: Run Phase 5 validation
         run: uv run python tests/test_phase5_validation.py
 

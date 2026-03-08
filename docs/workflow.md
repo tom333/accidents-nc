@@ -133,7 +133,7 @@ Utiliser PostgreSQL et S3 de production (mettre les bons credentials dans `.env`
 ```bash
 cd /path/to/accidents
 export PYTHONPATH=$PWD
-dagster dev -f dagster_pipeline/definitions.py
+dagster dev -f src/definitions.py
 
 # Ouvrir http://localhost:3000
 ```
@@ -191,7 +191,7 @@ tilt up
 tilt up
 
 # 2. Modifier du code Python
-vim src/accidents/bronze/ingest.py
+vim src/bronze/ingest.py
 
 # 3. Tilt détecte automatiquement et sync (~2s)
 # Pas besoin de rebuild !
@@ -238,15 +238,14 @@ Tous les fichiers Python sont synchronisés sauf :
 ### Structure Assets
 
 ```
-dagster_pipeline/
-├── assets/
-│   ├── bronze.py       # Assets bronze (wrappers)
-│   ├── silver.py       # Assets silver
-│   └── gold.py         # Assets gold
-├── definitions.py      # Définitions Dagster (entry point)
-├── schedules.py        # Jobs schedulés
-└── resources/
-    └── ducklake.py     # Resource DuckLake
+src/assets/
+├── bronze/             # Assets bronze
+├── silver/             # Assets silver
+└── gold/               # Assets gold
+src/definitions.py      # Définitions Dagster (entry point)
+src/schedules.py        # Jobs schedulés
+src/resources/
+└── ducklake.py         # Resource DuckLake common
 ```
 
 ### Créer un Nouvel Asset
@@ -254,10 +253,10 @@ dagster_pipeline/
 **Exemple** : Asset pour générer des prédictions quotidiennes
 
 ```python
-# dagster_pipeline/assets/predictions.py
+# src/assets/predictions.py
 
 from dagster import asset, AssetExecutionContext
-from src.accidents.predictions import generate_daily_predictions
+from src.utils.predictions import generate_daily_predictions
 
 @asset(
     deps=["gold_models"],  # Dépend de gold_models
@@ -266,23 +265,23 @@ from src.accidents.predictions import generate_daily_predictions
 )
 def daily_predictions(context: AssetExecutionContext) -> int:
     """Génère les prédictions pour les 24 prochaines heures."""
-    
+
     context.log.info("Génération prédictions quotidiennes...")
-    
+
     count = generate_daily_predictions()
-    
+
     context.log.info(f"✅ {count} prédictions générées")
     return count
 ```
 
-**Enregistrer l'asset** dans [dagster_pipeline/definitions.py](../dagster_pipeline/definitions.py) :
+**Enregistrer l'asset** dans# src/definitions.py :
 
 ```python
 from dagster import Definitions
-from dagster_pipeline.assets.bronze import bronze_accidents_nc
-from dagster_pipeline.assets.silver import silver_features
-from dagster_pipeline.assets.gold import gold_train_test, gold_models
-from dagster_pipeline.assets.predictions import daily_predictions  # NOUVEAU
+from src.assets.bronze import bronze_accidents_nc
+from src.assets.silver import silver_features
+from src.assets.gold import gold_train_test, gold_models
+from src.assets.predictions import daily_predictions  # NOUVEAU
 
 defs = Definitions(
     assets=[
@@ -305,13 +304,13 @@ defs = Definitions(
 
 **Via CLI** :
 ```bash
-dagster asset materialize -m dagster_pipeline.definitions -a daily_predictions
+dagster asset materialize -m src.definitions -a daily_predictions
 ```
 
 **Via Code** :
 ```python
 from dagster import materialize
-from dagster_pipeline.assets.predictions import daily_predictions
+from src.assets.predictions import daily_predictions
 
 result = materialize([daily_predictions])
 ```
@@ -322,7 +321,7 @@ result = materialize([daily_predictions])
 # test_predictions.py
 
 from dagster import build_asset_context
-from dagster_pipeline.assets.predictions import daily_predictions
+from src.assets.predictions import daily_predictions
 
 def test_daily_predictions():
     context = build_asset_context()
@@ -333,7 +332,7 @@ def test_daily_predictions():
 ### Ajouter un Schedule
 
 ```python
-# dagster_pipeline/schedules.py
+# src/schedules.py
 
 from dagster import ScheduleDefinition, define_asset_job
 
@@ -414,7 +413,7 @@ app = marimo.App()
 def _():
     import marimo as mo
     import polars as pl
-    from src.accidents.ducklake import get_client
+    from src.ducklake import get_client
     return mo, pl, get_client
 
 @app.cell
@@ -429,7 +428,7 @@ def _(df, mo):
     # Afficher statistiques
     mo.md(f"""
     # Accidents NC
-    
+
     - **Total accidents** : {len(df)}
     - **Période** : {df['date_accident'].min()} → {df['date_accident'].max()}
     """)
@@ -439,7 +438,7 @@ def _(df, mo):
 def _(df):
     # Visualisation
     import altair as alt
-    
+
     chart = alt.Chart(df).mark_bar().encode(
         x=alt.X('month:O', title='Mois'),
         y=alt.Y('count()', title='Nombre accidents')
@@ -484,7 +483,7 @@ uv run pytest tests/unit/ -v
 uv run pytest tests/unit/test_bronze.py::TestIngestCaracteristiques::test_schema -v
 
 # Tests avec coverage
-uv run pytest tests/unit/ --cov=src/accidents --cov-report=html
+uv run pytest tests/unit/ --cov=src --cov-report=html
 
 # Voir coverage HTML
 open htmlcov/index.html
@@ -504,22 +503,22 @@ python tests/test_phase6_validation.py
 
 import pytest
 from unittest.mock import Mock, patch
-from src.accidents.my_module import my_function
+from src.my_module import my_function
 
 class TestMyFunction:
-    
+
     def test_basic_behavior(self):
         """Test comportement de base."""
         result = my_function(input_data)
         assert result == expected_output
-    
-    @patch('src.accidents.my_module.get_client')
+
+    @patch('src.my_module.get_client')
     def test_with_mock(self, mock_client):
         """Test avec mock DuckLake."""
         mock_client.return_value.table.return_value.pl.return_value = mock_df
-        
+
         result = my_function()
-        
+
         assert result > 0
         mock_client.assert_called_once()
 ```
@@ -560,11 +559,11 @@ git pull origin main
 git checkout -b feature/add-weather-features
 
 # 2. Développer
-vim src/accidents/silver/features.py
+vim src/silver/features.py
 uv run pytest tests/unit/test_silver.py -v
 
 # 3. Commit (Conventional Commits)
-git add src/accidents/silver/features.py
+git add src/silver/features.py
 git commit -m "feat(silver): add weather features from OpenWeather API"
 
 # 4. Push
@@ -702,7 +701,7 @@ export PYTHONPATH=$PWD
 echo $PYTHONPATH
 
 # 2. Vérifier imports
-python -c "from dagster_pipeline.definitions import defs; print(defs)"
+python -c "from src.definitions import defs; print(defs)"
 
 # 3. Vérifier dépendances
 uv sync
@@ -726,7 +725,7 @@ docker-compose logs postgres
 cat .env | grep POSTGRES
 
 # 3. Tester connexion
-python -c "from src.accidents.ducklake import get_client; client = get_client(); print(client)"
+python -c "from src.ducklake import get_client; client = get_client(); print(client)"
 ```
 
 ### Problème : S3 Access Denied

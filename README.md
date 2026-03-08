@@ -280,7 +280,7 @@ uv run ruff check src/ tests/
 | [docs/deployment.md](docs/deployment.md) | Guide déploiement Kubernetes + ArgoCD |
 | [TILT.md](TILT.md) | Développement rapide avec Tilt (live-reload) |
 | [DOCKER.md](DOCKER.md) | Build et push images Docker |
-| [INDUSTRIALISATION.md](INDUSTRIALISATION.md) | Historique migration legacy → Dagster |
+
 
 ---
 
@@ -578,29 +578,6 @@ git push origin feature/ma-nouvelle-feature
   - Linter : ruff (ligne 100 caractères)
   - Tests : pytest (>80% coverage)
   - Docstrings : Google style
-
----
-
-## 🗺️ Roadmap
-
-### Phase 7 : Documentation (en cours)
-- [x] README.md refonte
-- [ ] docs/architecture.md
-- [ ] docs/workflow.md
-- [ ] docs/deployment.md
-
-### Phase 8 : Nettoyage (à venir)
-- [ ] Archiver fichiers legacy
-- [ ] Nettoyer .gitignore
-- [ ] Validation finale
-
-### Futures Améliorations
-- [ ] API FastAPI (prédictions temps réel)
-- [ ] Dashboard MLflow (tracking expériences)
-- [ ] Tests intégration DuckLake
-- [ ] Pre-commit hooks (ruff + pytest)
-- [ ] Coverage > 90%
-- [ ] Features supplémentaires (densité population, POI)
 
 ---
 

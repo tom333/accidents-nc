@@ -443,7 +443,7 @@ st.markdown(
     """
 <div style='text-align: center; color: #666; font-size: 12px;'>
     <p>🔮 Prédictions via API Gateway (Blending CatBoost/XGBoost/MLP)</p>
-    <p>📊 {len(FEATURE_COLUMNS)} features enrichies | 🗺️ Basé sur OpenStreetMap</p>
+    <p>📊 +20 features enrichies | 🗺️ Basé sur OpenStreetMap</p>
     <p>⚠️ Ces prédictions sont indicatives et ne remplacent pas la prudence au volant</p>
 </div>
 """,

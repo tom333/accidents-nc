@@ -38,20 +38,20 @@ P_final = (0.4 × P_catboost + 0.4 × P_xgboost + 0.2 × P_mlp) / 1.0
 
 | Métrique | Valeur |
 |----------|--------|
-| **Recall** | **92.2%** |
-| **Precision** | 94.5% |
-| **F1-Score** | **93.3%** |
-| **AUC-ROC** | **98.0%** |
-| **Seuil optimal** | 0.641 |
+| **Recall** | **66.0%** |
+| **Precision** | 88.2% |
+| **F1-Score** | **75.5%** |
+| **AUC-ROC** | **92.9%** |
+| **Seuil optimal** | 0.755 |
 
 **AUC-ROC par modèle** :
 
 | Modèle | AUC-ROC |
 |--------|---------|
-| CatBoost | 97.8% |
-| XGBoost | 97.7% |
-| MLP | 97.3% |
-| **Blend (ensemble)** | **98.0%** |
+| CatBoost | 93.4% |
+| XGBoost | 91.3% |
+| MLP | 89.6% |
+| **Blend (ensemble)** | **92.9%** |
 
 **Résultat clé** : Le blend combine la force de chaque modèle et dépasse tous les modèles individuels en AUC-ROC (+0.2pp vs CatBoost).
 
@@ -63,15 +63,14 @@ P_final = (0.4 × P_catboost + 0.4 × P_xgboost + 0.2 × P_mlp) / 1.0
 
 | Métrique | Interprétation terrain |
 |----------|------------------------|
-| **Recall 92.2%** | Sur 100 zones dangereuses réelles, le modèle en détecte **92**. Seulement **8 sont manquées** (faux négatifs). |
-| **Precision 94.5%** | Sur 100 alertes émises, **94–95 correspondent à une vraie zone à risque**. Très peu de fausses alarmes. |
-| **AUC-ROC 98.0%** | Le modèle discrimine quasi-parfaitement les zones à risque sur l’ensemble des seuils. Un score ≥ 95% est considéré excellent ; ≥ 98% est de niveau production. |
-| **Seuil 0.641** | Optimisé (vs 0.5 par défaut), il réduit les fausses alarmes tout en maintenant un recall élevé. |
+| **Recall 66.0%** | Sur 100 véritables zones dangereuses, le modèle en détecte **66**. Les autres sont manquées (faux négatifs). |
+| **Precision 88.2%** | Sur 100 alertes émises, **88 correspondent à une vraie zone à risque**. Très peu de fausses alarmes. |
+| **AUC-ROC 92.9%** | Le modèle discrimine excellemment les zones à risque sur l’ensemble des seuils. Un score ≥ 90% est considéré comme très performant sur ce type de données spatiales déséquilibrées. |
+| **Seuil 0.755** | Optimisé (vs 0.5 par défaut) via la courbe Precision-Recall pour maximiser le F1-score tout en maîtrisant les fausses alarmes. |
 
-**Pourquoi le blend apporte quelque chose ?** Les 3 modèles font des erreurs sur des exemples *différents*. En les combinant (pondération 40/40/20), le blend "vote" de façon plus robuste : une zone difficile a bien moins de chances d’être mal classifiée par les **trois** modèles simultanément.
+**Pourquoi le blend apporte quelque chose ?** Les 3 modèles font des erreurs sur des exemples *différents*. En les combinant (pondération 40/40/20), le blend lisse les prédictions aléatoires individuellement et garantit plus de robustesse.
 
-**Ce qui reste imparfait :** 8% de faux négatifs (zones à risque non détectées) et 5.5% de fausses alarmes.
-Dans un contexte de sécurité routière, manquer une zone à risque est plus coûteux qu’une fausse alerte — le recall de **92.2%** est donc la métrique à maximiser en priorité.
+**Ce qui reste à améliorer :** Le recall (tombé à 66%) indique que le ratio de négatifs très fort (`NEGATIVE_SAMPLES_RATIO = 10`) a poussé les modèles à être beaucoup plus prudents, favorisant la précision (88.2%) au détriment du recall par rapport aux anciennes pondérations.
 
 ---
 
@@ -514,12 +513,12 @@ Namespace: ia-lab
    - Diversité d'approche
 
 **Performances ensemble** :
-- **Métrique principale** : Recall (priorité détection accidents)
-- **Recall** : **92.2%**
-- **Precision** : 94.5%
-- **F1-Score** : 93.3%
-- **AUC-ROC** : **98.0%** (Blend) vs 97.8% (CatBoost) / 97.7% (XGBoost) / 97.3% (MLP)
-- **Seuil optimal** : 0.641 (optimisé sur la courbe Precision-Recall)
+- **Métrique principale** : F1-Score (compromis équilibré)
+- **Recall** : **66.0%**
+- **Precision** : 88.2%
+- **F1-Score** : 75.5%
+- **AUC-ROC** : **92.9%** (Blend) vs 93.4% (CatBoost) / 91.3% (XGBoost) / 89.6% (MLP)
+- **Seuil optimal** : 0.755 (optimisé pour le F1 sur la courbe Precision-Recall)
 
 ### Rapports de Qualité (Evidently AI)
 

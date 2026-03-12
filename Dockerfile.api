@@ -47,9 +47,8 @@ COPY --from=builder --chown=api:api /app/.venv /app/.venv
 COPY --from=builder --chown=api:api /app/src /app/src
 COPY --from=builder --chown=api:api /app/apps/api /app/apps/api
 
-# Copy models and preprocessors (artifacts required for inference)
-COPY --from=builder --chown=api:api /app/*.pkl /app/
-COPY --from=builder --chown=api:api /app/blend_metrics.json /app/
+# Stateless image: models are downloaded at pod startup by an init container
+RUN mkdir -p /app/models && chown api:api /app/models
 
 # Ensure the venv is used by default
 ENV PATH="/app/.venv/bin:$PATH" \

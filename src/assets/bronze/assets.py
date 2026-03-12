@@ -1,12 +1,30 @@
 """Bronze layer assets - Raw data ingestion."""
 
-from dagster import AssetExecutionContext, Output, asset
+import json
+
+from dagster import AssetExecutionContext, Output, TableColumn, TableSchema, asset
 
 from src.assets.bronze.ingest import (
     create_accidents_nc,
     ingest_caracteristiques,
     ingest_usagers,
 )
+from src.assets.bronze.schema import BRONZE_SCHEMA
+from src.ducklake import get_client
+
+
+def _build_table_metadata(table_name: str) -> tuple[str, TableSchema]:
+    client = get_client()
+    conn = client.conn
+    sample_df = conn.execute(f"SELECT * FROM {BRONZE_SCHEMA}.{table_name} LIMIT 10").df()
+
+    sample_json = json.dumps(sample_df.to_dict(orient="records"), default=str)
+    columns = [
+        TableColumn(name=str(col), type=str(dtype)) for col, dtype in sample_df.dtypes.items()
+    ]
+    table_schema = TableSchema(columns=columns)
+
+    return sample_json, table_schema
 
 
 @asset(
@@ -25,12 +43,18 @@ def caracteristiques(context: AssetExecutionContext) -> Output[dict]:
     result = ingest_caracteristiques()
     context.log.info(f"✅ Ingéré {result['rows']} lignes caractéristiques")
 
+    sample_json, table_schema = _build_table_metadata("caracteristiques")
+
     return Output(
         result,
         metadata={
             "rows": result["rows"],
             "table": "bronze.caracteristiques",
             "source": "data.gouv.fr",
+            "sample_10_rows": sample_json,
+            "dagster/row_count": result["rows"],
+            "dagster/table_name": f"{BRONZE_SCHEMA}.caracteristiques",
+            "dagster/column_schema": table_schema,
         },
     )
 
@@ -51,12 +75,18 @@ def usagers(context: AssetExecutionContext) -> Output[dict]:
     result = ingest_usagers()
     context.log.info(f"✅ Ingéré {result['rows']} lignes usagers")
 
+    sample_json, table_schema = _build_table_metadata("usagers")
+
     return Output(
         result,
         metadata={
             "rows": result["rows"],
             "table": "bronze.usagers",
             "source": "data.gouv.fr",
+            "sample_10_rows": sample_json,
+            "dagster/row_count": result["rows"],
+            "dagster/table_name": f"{BRONZE_SCHEMA}.usagers",
+            "dagster/column_schema": table_schema,
         },
     )
 
@@ -83,11 +113,17 @@ def accidents_nc(context: AssetExecutionContext) -> Output[dict]:
     result = create_accidents_nc()
     context.log.info(f"✅ Créé {result['rows']} accidents NC")
 
+    sample_json, table_schema = _build_table_metadata("accidents_nc")
+
     return Output(
         result,
         metadata={
             "rows": result["rows"],
             "table": "bronze.accidents_nc",
             "department": "988",
+            "sample_10_rows": sample_json,
+            "dagster/row_count": result["rows"],
+            "dagster/table_name": f"{BRONZE_SCHEMA}.accidents_nc",
+            "dagster/column_schema": table_schema,
         },
     )

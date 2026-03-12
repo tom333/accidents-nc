@@ -38,9 +38,14 @@ FEATURE_COLUMNS = [
     "hour_cos",
     "dayofweek_sin",
     "dayofweek_cos",
-    # 'road_type', 'speed_limit',
     "is_holiday",
     "school_holidays",
+    "road_type",  # Type de route (motorway, residential, unclassified...)
+    "speed_limit",  # Vitesse maximale autorisée en km/h
+    "lanes",  # Nombre de voies de circulation
+    "lit",  # Éclairage public (yes/no)
+    "surface",  # État de la route (asphalt, unpaved, gravel...)
+    "oneway",  # Sens unique (yes/no)
 ]
 
 # Paramètres clustering géographique
@@ -89,13 +94,19 @@ def build_datasets() -> dict[str, int]:
     client = get_client()
     conn = client.conn
 
-    # Charger données silver
-    df = conn.execute(f"SELECT * FROM {SILVER_SCHEMA}.full_dataset").df()
+    # Charger données silver avec les nouvelles features
+    df = conn.execute(
+        f"SELECT *, road_type, speed_limit, lanes, lit, surface, oneway FROM {SILVER_SCHEMA}.full_dataset"
+    ).df()
     print(f"📊 Données silver: {len(df)} lignes")
 
-    # Encoder atm
-    le = LabelEncoder()
-    df["atm"] = le.fit_transform(df["atm"].astype(str))
+    # Encoder les nouvelles features catégoriques
+    categorical_features = ["atm", "road_type", "lit", "surface", "oneway"]
+    encoders = {}
+    for feature in categorical_features:
+        le = LabelEncoder()
+        df[feature] = le.fit_transform(df[feature].astype(str))
+        encoders[feature] = le
 
     # Enrichissement avec les features temporelles
     from src.utils.temporal import compute_temporal_features
@@ -105,8 +116,7 @@ def build_datasets() -> dict[str, int]:
     # ========== CLUSTERING GÉOGRAPHIQUE (Anti-Leakage GPS) ==========
     print("🗺️  Création des zones de risque géographiques (K-Means)...")
 
-    # Split AVANT clustering pour éviter la fuite
-    # On a besoin de lat/lon temporairement pour le clustering
+    # Mise à jour des features pour le clustering géographique
     features_base = [col for col in FEATURE_COLUMNS if col != "geo_cluster"]
     temp_features = features_base + ["latitude", "longitude"]
 
@@ -156,7 +166,7 @@ def build_datasets() -> dict[str, int]:
     conn.unregister("train_tmp")
     conn.unregister("test_tmp")
 
-    # Sauvegarder metadata
+    # Sauvegarder metadata avec les nouvelles features
     feature_meta = pd.DataFrame(
         {"feature_name": FEATURE_COLUMNS, "order_index": range(len(FEATURE_COLUMNS))}
     )
@@ -168,11 +178,11 @@ def build_datasets() -> dict[str, int]:
     conn.unregister("meta_tmp")
 
     # Sauvegarder encoders localement et sur S3
-    joblib.dump(le, "atm_encoder.pkl")
+    joblib.dump(encoders, "categorical_encoders.pkl")
     joblib.dump(FEATURE_COLUMNS, "features.pkl")
     joblib.dump(kmeans, "kmeans_geo.pkl")
 
-    _upload_to_s3(Path("atm_encoder.pkl"), f"{S3_CACHE_PREFIX}atm_encoder.pkl")
+    _upload_to_s3(Path("categorical_encoders.pkl"), f"{S3_CACHE_PREFIX}categorical_encoders.pkl")
     _upload_to_s3(Path("features.pkl"), f"{S3_CACHE_PREFIX}features.pkl")
     _upload_to_s3(Path("kmeans_geo.pkl"), f"{S3_CACHE_PREFIX}kmeans_geo.pkl")
 

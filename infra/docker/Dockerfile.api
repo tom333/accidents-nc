@@ -1,0 +1,36 @@
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_LINK_MODE=copy \
+    PYTHONPATH=/app
+
+WORKDIR /app
+
+# Dépendances système minimales pour l'inférence
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+# Installer les dépendances (groupe api uniquement pour réduire la taille)
+COPY pyproject.toml uv.lock ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --locked --no-install-project --extra api
+
+# Copier le code source
+COPY src /app/src
+COPY apps/api /app/apps/api
+
+# Installer le projet
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --locked --extra api
+
+ENV PATH="/app/.venv/bin:$PATH"
+
+EXPOSE 8000
+
+# Lancer FastAPI avec uvicorn
+CMD ["uvicorn", "apps.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

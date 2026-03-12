@@ -65,10 +65,11 @@ AREAS = (
 
 # Paramètres (à déplacer dans config.py si besoin)
 BUFFER_METERS = 200
-GRID_STEP = 0.02
+GRID_STEP = 0.001
 ACCIDENT_EXCLUSION_BUFFER_KM = 0.3
 TEMPORAL_RISK_RATIO = 0.85
 MAX_NEGATIVE_SAMPLES_MULTIPLIER = 100
+NEGATIVE_SAMPLES_RATIO = 10
 
 
 def _get_s3_client():
@@ -125,7 +126,12 @@ def load_accidents() -> pl.DataFrame:
         & (pl.col("longitude").is_between(163.5, 168.0))
     )
     print(f"✅ Après filtrage géographique: {len(filtered)} lignes")
-    return filtered
+    deduplicated = filtered.unique(subset=["datetime", "latitude", "longitude"])
+
+    print(
+        f"✅ Après filtrage géo et DÉDUPLICATION (1 ligne = 1 accident réel): {len(deduplicated)} lignes"
+    )
+    return deduplicated
 
 
 def load_routes_grid(areas: tuple[str, ...] = AREAS) -> gpd.GeoDataFrame:
@@ -187,24 +193,91 @@ def load_routes_grid(areas: tuple[str, ...] = AREAS) -> gpd.GeoDataFrame:
 
 
 def build_grid(routes: gpd.GeoDataFrame) -> pd.DataFrame:
-    """Construit une grille de points sur les routes avec buffer."""
-    print("🗺️  Construction grille routière...")
+    """Construit une grille de points sur les routes avec buffer et extrait les features OSM réelles."""
+    print("🗺️  Construction grille routière et extraction des features OSM...")
 
-    # Buffer des routes
+    # 1. Buffer des routes (inchangé)
     buffered_gdf = buffer_routes(routes, BUFFER_METERS)
-
-    # Bounding box
     minx, miny, maxx, maxy = buffered_gdf.total_bounds
 
-    # Créer grille
+    # 2. Création de la grille (inchangé)
     grid_gdf = create_spatial_grid(minx, miny, maxx, maxy, GRID_STEP, clip_to=buffered_gdf)
 
-    # Features OSM par défaut
-    grid_gdf["road_type"] = "unknown"
-    grid_gdf["speed_limit"] = 50
+    # 3. Préparation des routes OSM
+    # Les données OSM (via osmnx) contiennent les colonnes 'highway' (type de route), 'maxspeed', 'lanes', etc.
+    # Certaines valeurs peuvent être des listes (si plusieurs tronçons se chevauchent), on ne garde que le premier élément.
+    def clean_osm_col(x):
+        # Gérer les listes/arrays en extractant le premier élément
+        if isinstance(x, list | np.ndarray):
+            if len(x) > 0:
+                x = x[0]
+            else:
+                return np.nan
+        # Vérifier nullité sans ambiguité avec les arrays
+        if pd.isna(x):
+            return np.nan
+        return str(x)
 
-    result = grid_gdf[["latitude", "longitude", "road_type", "speed_limit"]].reset_index(drop=True)
-    print(f"✅ {len(result)} points sur grille")
+    # On s'assure que les colonnes qui nous intéressent existent dans le GeoDataFrame téléchargé
+    for col in ["highway", "maxspeed", "lanes", "lit", "surface", "oneway"]:
+        if col not in routes.columns:
+            routes[col] = np.nan
+        else:
+            routes[col] = routes[col].apply(clean_osm_col)
+
+    # On ne garde que les géométries et les colonnes utiles pour accélérer la jointure
+    routes_features = routes[
+        ["geometry", "highway", "maxspeed", "lanes", "lit", "surface", "oneway"]
+    ].copy()
+
+    # 4. Jointure spatiale (Spatial Join Nearest)
+    # A. On projette en Lambert Nouvelle-Calédonie (Mètres)
+    grid_gdf_metric = grid_gdf.to_crs(epsg=3163)
+    routes_features_metric = routes_features.to_crs(epsg=3163)
+
+    # B. On fait la jointure (les distances calculées seront maintenant de VRAIS mètres)
+    grid_with_features_metric = gpd.sjoin_nearest(
+        grid_gdf_metric, routes_features_metric, how="left", distance_col="distance_to_road_meters"
+    )
+
+    # C. On repasse en GPS standard (Degrés) pour que le ML (et les cartes) marchent
+    grid_with_features = grid_with_features_metric.to_crs(epsg=4326)
+
+    # 5. Nettoyage et typage post-jointure
+    # Renommer 'highway' en 'road_type' pour correspondre au schéma
+    grid_with_features = grid_with_features.rename(
+        columns={"highway": "road_type", "maxspeed": "speed_limit"}
+    )
+
+    # Valeurs par défaut intelligentes pour les données manquantes (imputation)
+    grid_with_features["road_type"] = grid_with_features["road_type"].fillna("unknown")
+
+    # Traitement de la vitesse (souvent au format string "50", parfois "50 mph", on nettoie)
+    grid_with_features["speed_limit"] = (
+        grid_with_features["speed_limit"].str.extract(r"(\d+)").astype(float)
+    )
+    grid_with_features["speed_limit"] = (
+        grid_with_features["speed_limit"].fillna(50.0).astype(int)
+    )  # Valeur par défaut 50 km/h
+
+    grid_with_features["lanes"] = (
+        grid_with_features["lanes"].fillna(2).astype(int)
+    )  # Par défaut, 2 voies
+    grid_with_features["lit"] = grid_with_features["lit"].fillna("no")
+    grid_with_features["surface"] = grid_with_features["surface"].fillna("asphalt")
+    grid_with_features["oneway"] = grid_with_features["oneway"].fillna("no")
+
+    # Suppression des doublons potentiels liés à la jointure (si plusieurs tronçons à distance exactement égale)
+    grid_with_features = grid_with_features.drop_duplicates(
+        subset=["latitude", "longitude"]
+    ).reset_index(drop=True)
+
+    # 6. Sélection finale des colonnes
+    result = grid_with_features[
+        ["latitude", "longitude", "road_type", "speed_limit", "lanes", "lit", "surface", "oneway"]
+    ]
+
+    print(f"✅ {len(result)} points sur grille enrichis avec OSM")
 
     return pd.DataFrame(result)
 
@@ -224,7 +297,9 @@ def generate_negative_samples(accidents: pl.DataFrame, routes_grid: pd.DataFrame
     print(f"   Grille sûre: {len(safe_grid)} points (exclusion {ACCIDENT_EXCLUSION_BUFFER_KM}km)")
 
     # Nombre d'échantillons négatifs
-    n_samples = min(len(safe_grid) * MAX_NEGATIVE_SAMPLES_MULTIPLIER, len(accidents) * 2)
+    n_samples = min(
+        len(safe_grid) * MAX_NEGATIVE_SAMPLES_MULTIPLIER, len(accidents) * NEGATIVE_SAMPLES_RATIO
+    )
 
     # distribution temporelle
     n_risk_hours = int(n_samples * TEMPORAL_RISK_RATIO)
@@ -277,7 +352,7 @@ def generate_negative_samples(accidents: pl.DataFrame, routes_grid: pd.DataFrame
 
 
 def _attach_road_features(combined: pd.DataFrame, routes_grid: pd.DataFrame) -> pd.DataFrame:
-    """Associe les features routieres via le point de grille le plus proche."""
+    """Associe les features routières via le point de grille le plus proche."""
     if routes_grid.empty:
         raise ValueError("routes_grid est vide, impossible d'enrichir les routes")
 
@@ -289,8 +364,14 @@ def _attach_road_features(combined: pd.DataFrame, routes_grid: pd.DataFrame) -> 
     nearest = routes_grid.iloc[idx].reset_index(drop=True)
 
     combined = combined.copy()
+    # On ajoute toutes les nouvelles features
     combined["road_type"] = nearest["road_type"].to_numpy()
     combined["speed_limit"] = nearest["speed_limit"].to_numpy()
+    combined["lanes"] = nearest["lanes"].to_numpy()
+    combined["lit"] = nearest["lit"].to_numpy()
+    combined["surface"] = nearest["surface"].to_numpy()
+    combined["oneway"] = nearest["oneway"].to_numpy()
+
     return combined
 
 
@@ -349,7 +430,12 @@ def build_feature_store() -> dict[str, int]:
     )
     conn.unregister("features_dataframe")
 
+    # Sauvegarder la grille spatiale pour l'API
+    joblib.dump(routes_grid, "routes_grid.pkl")
+    _upload_to_s3(Path("routes_grid.pkl"), f"{S3_CACHE_PREFIX}routes_grid.pkl")
+
     print(f"💾 Table {SILVER_SCHEMA}.full_dataset créée ({len(combined)} lignes)")
+    print("💾 Grille spatiale (routes_grid.pkl) exportée pour l'API d'inférence.")
 
     return {
         "rows": len(combined),

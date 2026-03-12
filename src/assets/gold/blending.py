@@ -74,10 +74,10 @@ def blend_model(context: AssetExecutionContext):
     conn = get_client().conn
     test_df = conn.execute(f"SELECT * FROM {GOLD_SCHEMA}.test").df()
     y_test = test_df["target"].values
-    X_test_np = test_df[FEATURE_COLUMNS].values
+    X_test = test_df[FEATURE_COLUMNS]
 
     # ─── Prédictions blend ───
-    proba_blend = predict_blend(X_test_np, model_paths)
+    proba_blend = predict_blend(X_test, model_paths)
     save_predictions(proba_blend, "blend_preds.csv")
 
     # ─── Seuil optimal (Precision-Recall) ───
@@ -112,6 +112,8 @@ def blend_model(context: AssetExecutionContext):
     for name, m in [("catboost", cat_metrics), ("xgboost", xgb_metrics), ("mlp", mlp_metrics)]:
         if m.get("auc_roc") is not None:
             mlflow.log_metric(f"{name}_auc_roc", m["auc_roc"])
+        if m.get("model_uri"):
+            mlflow.log_param(f"{name}_model_uri", m["model_uri"])
 
     # ─── Plot : Precision-Recall du blend ───
     plt.figure(figsize=(9, 6))
@@ -192,10 +194,78 @@ def blend_model(context: AssetExecutionContext):
     mlflow.log_artifact("blend_preds.csv")
     context.log.info("✅ Plots blend générés et loggés dans MLflow.")
 
+    # ─── Feature Importance globale du blend (Permutation Importance) ───
+    context.log.info("🔍 Calcul de la Permutation Importance sur le blend...")
+    try:
+        import pandas as pd
+        from sklearn.inspection import permutation_importance
+
+        from src.assets.gold.blending_utils import BlendingEnsembleWrapper
+        from src.utils.models import load_model
+
+        # Charger les modèles en mémoire
+        cat_model = load_model(model_paths[0])
+        xgb_model = load_model(model_paths[1])
+        mlp_model = load_model(model_paths[2])
+
+        ensemble_model = BlendingEnsembleWrapper(
+            cat_model=cat_model,
+            xgb_model=xgb_model,
+            mlp_model=mlp_model,
+            mlp_weights=[0.4, 0.4, 0.2],
+            threshold=best_threshold,
+        )
+
+        # On utilise un échantillon pour des raisons de performance
+        sample_size = min(2000, len(X_test))
+        X_test_sample = X_test.sample(n=sample_size, random_state=42)
+        y_test_sample = y_test[X_test_sample.index]
+
+        # Permutation importance
+        result = permutation_importance(
+            ensemble_model,
+            X_test_sample,
+            y_test_sample,
+            n_repeats=5,
+            random_state=42,
+            scoring="roc_auc",
+            n_jobs=-1,
+        )
+
+        importance_df = pd.DataFrame(
+            {"feature": FEATURE_COLUMNS, "importance": result.importances_mean}
+        ).sort_values("importance", ascending=False)
+
+        # Plot
+        plt.figure(figsize=(10, 8))
+        plt.barh(
+            importance_df["feature"].head(15), importance_df["importance"].head(15), color="#B47CC7"
+        )
+        plt.xlabel("Permutation Importance (Mean AUC decrease)")
+        plt.title("Blend Feature Importance (Top 15)")
+        plt.gca().invert_yaxis()
+        plt.tight_layout()
+        plt.savefig("blend_feature_importance.png", dpi=150, bbox_inches="tight")
+        mlflow.log_artifact("blend_feature_importance.png")
+        plt.close()
+
+        importance_df.to_csv("blend_feature_importance.csv", index=False)
+        mlflow.log_artifact("blend_feature_importance.csv")
+        context.log.info("✅ Feature importance du blend générée et loggée.")
+
+    except Exception as e:
+        context.log.error(f"⚠️ Erreur lors du calcul de la permutation importance: {e}")
+
     # Sauvegarder métriques blend pour usage aval
     blend_metrics = {
         "preds_path": "blend_preds.csv",
         "threshold": best_threshold,
+        "weights": {"catboost": 0.4, "xgboost": 0.4, "mlp": 0.2},
+        "model_versions": {
+            "catboost": cat_metrics.get("model_uri"),
+            "xgboost": xgb_metrics.get("model_uri"),
+            "mlp": mlp_metrics.get("model_uri"),
+        },
         "recall": blend_recall,
         "precision": blend_precision,
         "f1": blend_f1,

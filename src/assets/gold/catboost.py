@@ -4,11 +4,13 @@ import json
 
 import joblib
 import matplotlib.pyplot as plt
+import mlflow.catboost
 import numpy as np
 import optuna
 import pandas as pd
 from catboost import CatBoostClassifier
 from dagster import AssetExecutionContext, asset
+from mlflow.models import infer_signature
 from optuna.integration import CatBoostPruningCallback
 from sklearn.metrics import (
     f1_score,
@@ -17,15 +19,28 @@ from sklearn.metrics import (
     recall_score,
     roc_auc_score,
 )
+from sklearn.model_selection import train_test_split
 
 from src.assets.gold.datasets import FEATURE_COLUMNS
 from src.assets.gold.schema import GOLD_SCHEMA
 from src.ducklake import get_client
 from src.utils.models import save_model, save_predictions
 
+# Features catégoriques pour CatBoost
+CAT_FEATURES = [
+    "geo_cluster",
+    "road_type",
+    "lit",
+    "surface",
+    "oneway",
+    "atm",
+]
+
 
 @asset(group_name="gold", deps=["ml_datasets"], required_resource_keys={"mlflow"})
 def tune_catboost(context: AssetExecutionContext):
+    registered_model_name = "accidents_catboost"
+
     conn = get_client().conn
     train_df = conn.execute(f"SELECT * FROM {GOLD_SCHEMA}.train").df()
     test_df = conn.execute(f"SELECT * FROM {GOLD_SCHEMA}.test").df()
@@ -33,6 +48,10 @@ def tune_catboost(context: AssetExecutionContext):
     y_train = train_df["target"]
     X_test = test_df[FEATURE_COLUMNS]
     y_test = test_df["target"]
+
+    X_fit, X_val, y_fit, y_val = train_test_split(
+        X_train, y_train, test_size=0.2, random_state=42, stratify=y_train
+    )
 
     def objective(trial):
         cb_params = {
@@ -48,15 +67,16 @@ def tune_catboost(context: AssetExecutionContext):
         }
         model = CatBoostClassifier(**cb_params)
         model.fit(
-            X_train,
-            y_train,
-            eval_set=(X_test, y_test),
+            X_fit,
+            y_fit,
+            eval_set=(X_val, y_val),
+            cat_features=CAT_FEATURES,
             callbacks=[CatBoostPruningCallback(trial, "AUC")],
             early_stopping_rounds=50,
             verbose=False,
         )
-        preds = model.predict(X_test)
-        return recall_score(y_test, preds, pos_label=1)
+        preds = model.predict(X_val)
+        return f1_score(y_val, preds, pos_label=1)
 
     study = optuna.create_study(
         direction="maximize",
@@ -72,14 +92,26 @@ def tune_catboost(context: AssetExecutionContext):
         random_state=42,
         verbose=False,
     )
-    best_model.fit(X_train, y_train)
+    best_model.fit(X_train, y_train, cat_features=CAT_FEATURES)
     save_model(best_model, "catboost_model.pkl")
     preds = best_model.predict_proba(X_test)
     save_predictions(preds, "catboost_preds.csv")
 
     # Log dans MLflow via resource Dagster
-    mlflow = context.resources.mlflow
-    mlflow.log_params(study.best_params)
+    mlflow_resource = context.resources.mlflow
+    mlflow_resource.log_params({f"cb_{k}": v for k, v in study.best_params.items()})
+
+    # Enregistrer le modèle dans le Model Registry (source de vérité cible)
+    signature = infer_signature(X_train, best_model.predict_proba(X_train))
+    model_info = mlflow.catboost.log_model(
+        cb_model=best_model,
+        artifact_path="model",
+        registered_model_name=registered_model_name,
+        signature=signature,
+    )
+    mlflow_resource.log_param("cb_registered_model_name", registered_model_name)
+    mlflow_resource.log_param("cb_registered_model_uri", f"models:/{registered_model_name}/latest")
+    mlflow_resource.log_param("cb_registered_model_source_uri", model_info.model_uri)
 
     y_proba = best_model.predict_proba(X_test)[:, 1]
 
@@ -98,7 +130,7 @@ def tune_catboost(context: AssetExecutionContext):
     # Sauvegarder le seuil avec le modèle
 
     joblib.dump({"threshold": best_threshold}, "catboost_threshold.pkl")
-    mlflow.log_artifact("catboost_threshold.pkl")
+    mlflow_resource.log_artifact("catboost_threshold.pkl")
 
     # Métriques avec seuil par défaut (0.5)
     y_pred_default = best_model.predict(X_test)
@@ -115,16 +147,15 @@ def tune_catboost(context: AssetExecutionContext):
     auc_roc = roc_auc_score(y_test, y_proba)
 
     # Log métriques (threshold=0.5)
-    mlflow.log_metric("recall_default", recall_default)
-    mlflow.log_metric("precision_default", precision_default)
-    mlflow.log_metric("f1_default", f1_default)
+    mlflow_resource.log_metric("recall_default", recall_default)
+    mlflow_resource.log_metric("precision_default", precision_default)
+    mlflow_resource.log_metric("f1_default", f1_default)
 
     # Log métriques (threshold tuned)
-    mlflow.log_metric("recall_tuned", recall_tuned)
-    mlflow.log_metric("precision_tuned", precision_tuned)
-    mlflow.log_metric("f1_tuned", f1_tuned)
-    mlflow.log_metric("best_threshold", best_threshold)
-    mlflow.log_metric("f1_default", f1_default)
+    mlflow_resource.log_metric("recall_tuned", recall_tuned)
+    mlflow_resource.log_metric("precision_tuned", precision_tuned)
+    mlflow_resource.log_metric("f1_tuned", f1_tuned)
+    mlflow_resource.log_metric("best_threshold", best_threshold)
 
     # Plot Precision-Recall curve
     plt.figure(figsize=(10, 6))
@@ -143,7 +174,7 @@ def tune_catboost(context: AssetExecutionContext):
     plt.legend()
     plt.grid(True, alpha=0.3)
     plt.savefig("precision_recall_curve.png", dpi=150, bbox_inches="tight")
-    mlflow.log_artifact("precision_recall_curve.png")
+    mlflow_resource.log_artifact("precision_recall_curve.png")
     plt.close()
 
     # Feature Importance
@@ -155,7 +186,7 @@ def tune_catboost(context: AssetExecutionContext):
 
     # Log top 10 comme métriques
     for _idx, row in importance_df.head(10).iterrows():
-        mlflow.log_metric(f"importance_{row['feature']}", row["importance"])
+        mlflow_resource.log_metric(f"importance_{row['feature']}", row["importance"])
 
     # Créer et logger le plot
     plt.figure(figsize=(10, 8))
@@ -165,12 +196,12 @@ def tune_catboost(context: AssetExecutionContext):
     plt.gca().invert_yaxis()
     plt.tight_layout()
     plt.savefig("feature_importance_catboost.png", dpi=150, bbox_inches="tight")
-    mlflow.log_artifact("feature_importance_catboost.png")
+    mlflow_resource.log_artifact("feature_importance_catboost.png")
     plt.close()
 
     # Logger le CSV complet
     importance_df.to_csv("feature_importance_catboost.csv", index=False)
-    mlflow.log_artifact("feature_importance_catboost.csv")
+    mlflow_resource.log_artifact("feature_importance_catboost.csv")
 
     # ========== SHAP EXPLICABILITY ==========
     context.log.info("🔍 Calcul SHAP values pour explicabilité...")
@@ -190,7 +221,7 @@ def tune_catboost(context: AssetExecutionContext):
         shap.summary_plot(shap_values, X_test_sample, feature_names=FEATURE_COLUMNS, show=False)
         plt.tight_layout()
         plt.savefig("shap_summary_plot.png", dpi=150, bbox_inches="tight")
-        mlflow.log_artifact("shap_summary_plot.png")
+        mlflow_resource.log_artifact("shap_summary_plot.png")
         plt.close()
 
         # Bar Plot (importance moyenne absolue)
@@ -200,7 +231,7 @@ def tune_catboost(context: AssetExecutionContext):
         )
         plt.tight_layout()
         plt.savefig("shap_bar_plot.png", dpi=150, bbox_inches="tight")
-        mlflow.log_artifact("shap_bar_plot.png")
+        mlflow_resource.log_artifact("shap_bar_plot.png")
         plt.close()
 
         context.log.info("✅ SHAP plots générés et loggés")
@@ -210,11 +241,13 @@ def tune_catboost(context: AssetExecutionContext):
     except Exception as e:
         context.log.warning(f"⚠️  Erreur SHAP: {e}")
 
-    mlflow.log_artifact("catboost_model.pkl")
-    mlflow.log_artifact("catboost_preds.csv")
+    mlflow_resource.log_artifact("catboost_model.pkl")
+    mlflow_resource.log_artifact("catboost_preds.csv")
 
     # Sauvegarder métriques dans un fichier JSON pour blend_model
     catboost_metrics = {
+        "registered_model_name": registered_model_name,
+        "model_uri": f"models:/{registered_model_name}/latest",
         "model_path": "catboost_model.pkl",
         "preds_path": "catboost_preds.csv",
         "threshold": best_threshold,
@@ -225,6 +258,6 @@ def tune_catboost(context: AssetExecutionContext):
     }
     with open("catboost_metrics.json", "w") as f:
         json.dump(catboost_metrics, f)
-    mlflow.log_artifact("catboost_metrics.json")
+    mlflow_resource.log_artifact("catboost_metrics.json")
 
     return catboost_metrics

@@ -13,7 +13,7 @@ from src.ducklake import get_client
 
 
 @asset(
-    group_name="gold",
+    group_name="report",
     required_resource_keys={"mlflow"},
     deps=["blend_model"],  # Dépendance sur le blend pour avoir les prédictions
 )

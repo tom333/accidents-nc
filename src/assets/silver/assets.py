@@ -1,8 +1,12 @@
 """Silver layer assets - Feature engineering."""
 
-from dagster import AssetExecutionContext, Output, asset
+import json
+
+from dagster import AssetExecutionContext, Output, TableColumn, TableSchema, asset
 
 from src.assets.silver.features import build_feature_store
+from src.assets.silver.schema import SILVER_SCHEMA
+from src.ducklake import get_client
 
 
 @asset(
@@ -11,7 +15,7 @@ from src.assets.silver.features import build_feature_store
     compute_kind="python",
     deps=["accidents_nc"],
 )
-def full_dataset(context: AssetExecutionContext) -> Output[dict]:
+def full_dataset(context: AssetExecutionContext) -> Output[dict[str, int]]:
     """
     Construit silver.full_dataset avec features enrichies.
 
@@ -39,6 +43,20 @@ def full_dataset(context: AssetExecutionContext) -> Output[dict]:
         f"{result['negatives']} négatifs)"
     )
 
+    # Charger un extrait des données pour les métadonnées
+    client = get_client()
+    conn = client.conn
+    sample_df = conn.execute(f"SELECT * FROM {SILVER_SCHEMA}.full_dataset LIMIT 10").df()
+
+    # Convertir en JSON string (Dagster requiert des types sérialisables)
+    sample_json = json.dumps(sample_df.to_dict(orient="records"), default=str)
+
+    # Metadata table/colonnes Dagster
+    columns = [
+        TableColumn(name=str(col), type=str(dtype)) for col, dtype in sample_df.dtypes.items()
+    ]
+    table_schema = TableSchema(columns=columns)
+
     return Output(
         result,
         metadata={
@@ -48,5 +66,9 @@ def full_dataset(context: AssetExecutionContext) -> Output[dict]:
             "positive_rate": f"{positive_pct:.2f}%",
             "table": "silver.full_dataset",
             "features_count": 18,
+            "sample_10_rows": sample_json,
+            "dagster/row_count": result["rows"],
+            "dagster/table_name": f"{SILVER_SCHEMA}.full_dataset",
+            "dagster/column_schema": table_schema,
         },
     )

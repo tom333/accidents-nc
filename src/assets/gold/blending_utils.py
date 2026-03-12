@@ -13,9 +13,14 @@ def predict_blend(X, model_paths, weights=(0.4, 0.4, 0.2)):
     xgboost = load_model(model_paths[1])
     mlp = load_model(model_paths[2])
 
-    probas_cat = catboost.predict_proba(X)[:, 1]
-    probas_xgb = xgboost.predict_proba(X)[:, 1]
-    probas_mlp = mlp.predict_proba(X)[:, 1]
+    # CatBoost doit recevoir un DataFrame (avec noms de colonnes) quand le modèle
+    # a été entraîné avec des features catégorielles déclarées via cat_features.
+    X_df = X
+    X_np = X.values if hasattr(X, "values") else np.asarray(X)
+
+    probas_cat = catboost.predict_proba(X_df)[:, 1]
+    probas_xgb = xgboost.predict_proba(X_df)[:, 1]
+    probas_mlp = mlp.predict_proba(X_np)[:, 1]
 
     w_cat, w_xgb, w_mlp = weights
     proba_blend = (probas_cat * w_cat + probas_xgb * w_xgb + probas_mlp * w_mlp) / (

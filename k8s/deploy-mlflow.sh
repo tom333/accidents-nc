@@ -47,7 +47,7 @@ if [[ $REPLY =~ ^[Yy]$ ]]
 then
     echo "🏃 Lancement du job d'entraînement..."
     microk8s kubectl create job --from=cronjob/annual-training initial-training -n accidents
-    
+
     echo "📊 Suivi des logs du job (Ctrl+C pour quitter):"
     microk8s kubectl logs -f job/initial-training -n accidents
 fi

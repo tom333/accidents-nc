@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: accidents-config
+  namespace: accidents
+data:
+  S3_ENDPOINT: "http://rustfs-svc.ia-lab.svc.cluster.local:9000"

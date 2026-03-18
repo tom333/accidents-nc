@@ -5,7 +5,7 @@ metadata:
   labels:
     app: accidents-api
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app: accidents-api
@@ -14,23 +14,123 @@ spec:
       labels:
         app: accidents-api
     spec:
+      volumes:
+      - name: model-storage
+        emptyDir:
+          sizeLimit: 2Gi
+
+      initContainers:
+      - name: mlflow-model-downloader
+        image: python:3.12-slim
+        command:
+        - /bin/sh
+        - -c
+        args:
+        - |
+          set -e
+          pip install --no-cache-dir mlflow-skinny==3.8.1 boto3==1.42.37
+          python - <<'PY'
+          import os
+          import shutil
+          import mlflow
+          from mlflow.tracking import MlflowClient
+
+          base_dir = "/mnt/models"
+          os.makedirs(base_dir, exist_ok=True)
+
+          model_uris = {
+              "catboost": "models:/accidents_catboost/latest",
+              "xgboost": "models:/accidents_xgboost/latest",
+              "mlp": "models:/accidents_mlp/latest",
+          }
+
+          for model_name, uri in model_uris.items():
+              downloaded_path = mlflow.artifacts.download_artifacts(
+                  artifact_uri=uri,
+                  dst_path=base_dir,
+              )
+              target_path = os.path.join(base_dir, model_name)
+              if os.path.exists(target_path):
+                  shutil.rmtree(target_path)
+              shutil.copytree(downloaded_path, target_path)
+              print(f"Downloaded {model_name} -> {target_path}")
+
+          client = MlflowClient()
+          exp = client.get_experiment_by_name("accidents-nc")
+          if exp is None:
+              raise RuntimeError("MLflow experiment 'accidents-nc' not found")
+
+          runs = client.search_runs(
+              experiment_ids=[exp.experiment_id],
+              order_by=["attributes.start_time DESC"],
+              max_results=200,
+          )
+
+          for artifact_name in ["kmeans_geo.pkl", "atm_encoder.pkl", "features.pkl", "blend_metrics.json"]:
+              selected_run_id = None
+              for run in runs:
+                  artifacts = client.list_artifacts(run.info.run_id)
+                  artifact_names = {a.path for a in artifacts}
+                  if artifact_name in artifact_names:
+                      selected_run_id = run.info.run_id
+                      break
+
+              if selected_run_id is None:
+                  raise RuntimeError(f"Artifact not found in recent runs: {artifact_name}")
+
+              mlflow.artifacts.download_artifacts(
+                  run_id=selected_run_id,
+                  artifact_path=artifact_name,
+                  dst_path=base_dir,
+              )
+              print(f"Downloaded {artifact_name} from run {selected_run_id}")
+          PY
+          ls -lah /mnt/models
+        env:
+        - name: MLFLOW_TRACKING_URI
+          value: https://mlflow.tgu.ovh
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: mlflow-s3-credentials
+              key: access-key
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: mlflow-s3-credentials
+              key: secret-key
+        - name: MLFLOW_S3_ENDPOINT_URL
+          valueFrom:
+            configMapKeyRef:
+              name: accidents-config
+              key: S3_ENDPOINT
+        volumeMounts:
+        - name: model-storage
+          mountPath: /mnt/models
+
       containers:
       - name: api
-        image: accidents-api:latest
+        image: localhost:32000/accidents-api:latest
         ports:
         - containerPort: 8000
         env:
+        - name: MODEL_BASE_PATH
+          value: /app/models
         - name: S3_ENDPOINT
           valueFrom:
             configMapKeyRef:
               name: accidents-config
               key: S3_ENDPOINT
+        volumeMounts:
+        - name: model-storage
+          mountPath: /app/models
+          readOnly: true
         resources:
           limits:
             cpu: "1"
             memory: "2Gi"
           requests:
-            cpu: "0.5"
+            cpu: "0.05"
             memory: "1Gi"
         livenessProbe:
           httpGet:
